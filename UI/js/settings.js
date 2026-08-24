@@ -106,7 +106,7 @@ const THEMES = [
     }
     await patchFile('settings.json', { language });
 
-    await fetch('/api/meta/patch-by-id', {
+    await fetch('api/meta/patch-by-id', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -271,7 +271,7 @@ const THEMES = [
     saveBtn.textContent = t('apiKeySaving');
   
     try {
-      const res = await fetch('/api/api-key', {
+      const res = await fetch('api/api-key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ api_key }),
@@ -290,7 +290,7 @@ const THEMES = [
   }
   
   async function clearApiKey() {
-    const res = await fetch('/api/api-key', {
+    const res = await fetch('api/api-key', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clear: true }),

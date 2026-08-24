@@ -30,14 +30,14 @@ function filteredGameSaves() {
 }
 
 async function fetchMeta() {
-  const res = await fetch('/api/meta');
+  const res = await fetch('api/meta');
   if (!res.ok) return;
   const data = await res.json();
   metaCache = Array.isArray(data.meta) ? data.meta : [];
 }
 
 async function patchSaveMeta(saveId, patch) {
-  const res = await fetch('/api/meta/patch-by-id', {
+  const res = await fetch('api/meta/patch-by-id', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: saveId, patch }),
@@ -174,7 +174,7 @@ function renderSaveList() {
 
 async function duplicateSave(sourceId) {
     if (!sourceId || sourceId === 'consult') return null;
-    const res = await fetch('/api/meta/duplicate', {
+    const res = await fetch('api/meta/duplicate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: sourceId }),
@@ -207,7 +207,7 @@ async function confirmDeleteSave() {
     const saveId = deleteTargetSaveId;
     if (!saveId) return;
     try {
-      const res = await fetch('/api/meta/delete', {
+      const res = await fetch('api/meta/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: saveId }),

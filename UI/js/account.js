@@ -9,7 +9,7 @@ function getCurrentAccount() {
 }
 
 function getAccountSettingsPath(account) {
-  return `/Account/${account}/settings.json`;
+  return `Account/${account}/settings.json`;
 }
 
 async function fetchJSON(path) {
@@ -21,7 +21,7 @@ async function fetchJSON(path) {
 }
 
 async function fetchMe() {
-  const res = await fetch('/api/me', { cache: 'no-store' });
+  const res = await fetch('api/me', { cache: 'no-store' });
   if (!res.ok) {
     return null;
   }
@@ -30,7 +30,7 @@ async function fetchMe() {
 }
 
 async function logoutAccount() {
-  await fetch('/api/logout', { method: 'POST' });
+  await fetch('api/logout', { method: 'POST' });
   currentAccount = null;
 }
 
@@ -39,7 +39,7 @@ function getAccountFilePath(relativePath) {
 }
 
 async function patchFile(relativePath, patch) {
-  const res = await fetch('/api/patch', {
+  const res = await fetch('api/patch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

@@ -1,6 +1,6 @@
 function homeMarkdownPath() {
     const lang = window.AppState?.settings?.language || localStorage.getItem('app-language') || 'zh-CN';
-    return lang === 'en' ? '/content/home-en.md' : '/content/home-ch.md';
+    return lang === 'en' ? 'content/home-en.md' : 'content/home-ch.md';
   }
   
   async function showHomeView() {

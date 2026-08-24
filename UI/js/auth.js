@@ -54,7 +54,7 @@ function bindLoginForm() {
 
     try {
       const remember = document.getElementById('auth-remember').checked;
-      const res = await fetch('/api/login', {
+      const res = await fetch('api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ login, password, remember }),
@@ -69,7 +69,7 @@ function bindLoginForm() {
         return;
       }
       const language = localStorage.getItem('app-language') || 'zh-CN';
-      await fetch('/api/patch', {
+      await fetch('api/patch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -82,7 +82,7 @@ function bindLoginForm() {
       submitBtn.classList.add('is-success');
       submitBtn.textContent = t('loginSuccess');
       setTimeout(() => {
-        window.location.href = '/';
+        window.location.href = './';
       }, 500);
     } catch {
       showFieldError('auth-password', 'auth-password-error', t('loginPasswordIncorrect'));
@@ -150,7 +150,7 @@ function bindRegisterForm() {
 
     try {
       const language = localStorage.getItem('app-language') || 'zh-CN';
-      const res = await fetch('/api/register', {
+      const res = await fetch('api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

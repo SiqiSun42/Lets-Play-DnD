@@ -511,7 +511,7 @@ async function sendChatMessage() {
   let thinkingAcc = '';
 
   try {
-    const res = await fetch('/api/consult/message/stream', {
+    const res = await fetch('api/consult/message/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
@@ -625,7 +625,7 @@ function bindChatInput() {
 }
 
 async function loadConsultMessages() {
-  const res = await fetch('/api/consult/messages');
+  const res = await fetch('api/consult/messages');
   if (!res.ok) return;
   const data = await res.json();
   if (window.activeSession && data.language) {
@@ -637,7 +637,7 @@ async function loadConsultMessages() {
 }
 
 async function loadGameMessages(saveId) {
-  const res = await fetch('/api/game/messages?id=' + encodeURIComponent(saveId));
+  const res = await fetch('api/game/messages?id=' + encodeURIComponent(saveId));
   if (!res.ok) return;
   const data = await res.json();
   renderChatMessages(data.messages || []);
@@ -655,7 +655,7 @@ function closeClearConsultModal() {
 
 async function confirmClearConsult() {
   try {
-    const res = await fetch('/api/consult/clear', { method: 'POST' });
+    const res = await fetch('api/consult/clear', { method: 'POST' });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
       throw new Error(errBody.error || String(res.status));

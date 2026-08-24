@@ -50,7 +50,7 @@ function positionMenu(menu, rect) {
       clearPersistedViewSession();
     }
     await logoutAccount();
-    await fadeTo('/login.html');
+    await fadeTo('login.html');
   }
 
 btnAccountOptions.addEventListener('click', openAccountOptionsMenu);
@@ -252,7 +252,7 @@ async function onSavePassword(e) {
 
   const saveBtn = document.getElementById('btn-pwd-save');
   try {
-    const res = await fetch('/api/change-password', {
+    const res = await fetch('api/change-password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -355,7 +355,7 @@ async function onSaveEmail(e) {
 
   const saveBtn = document.getElementById('btn-email-save');
   try {
-    const res = await fetch('/api/change-email', {
+    const res = await fetch('api/change-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
@@ -381,7 +381,7 @@ async function onUnbindEmail() {
   clearEmailFieldError();
   const saveBtn = document.getElementById('btn-email-save');
   try {
-    const res = await fetch('/api/change-email', {
+    const res = await fetch('api/change-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ unbind: true }),
@@ -439,7 +439,7 @@ async function onConfirmDeleteAccount(e) {
   }
 
   try {
-    const res = await fetch('/api/delete-account', {
+    const res = await fetch('api/delete-account', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
@@ -461,7 +461,7 @@ async function onConfirmDeleteAccount(e) {
     if (typeof clearPersistedViewSession === 'function') {
       clearPersistedViewSession();
     }
-    await fadeTo('/login.html');
+    await fadeTo('login.html');
   } catch {
     err.textContent = t('deleteAccountWrongPassword');
     input.classList.add('is-invalid');

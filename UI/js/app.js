@@ -20,7 +20,7 @@ initAccount()
     showHomeView();
   })
   .catch(() => {
-    window.location.href = '/login.html';
+    window.location.href = 'login.html';
   });
 
 const sidebar = document.getElementById('sidebar');
