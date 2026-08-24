@@ -144,8 +144,7 @@ function syncChatViewTitle() {
 function chatTitleForSession(session) {
     if (!session) return '';
     if (session.type === 'consult') {
-      const label = document.querySelector('#btn-consult .nav-label');
-      return label?.textContent?.trim() || '';
+      return typeof t === 'function' ? t('consult') : '';
     }
     if (session.type === 'save') return session.title || session.id || '';
     return '';
