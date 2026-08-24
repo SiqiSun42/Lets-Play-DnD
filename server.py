@@ -5,13 +5,15 @@ import sqlite3
 import shutil
 import os
 import base64
+from dotenv import load_dotenv
 from cryptography.fernet import Fernet, InvalidToken
 from datetime import datetime, timezone, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 
 ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / ".env")
 app = Flask(__name__)
-app.secret_key = "dev-change-me-later"
+app.secret_key = os.environ["FLASK_SECRET_KEY"]
 app.permanent_session_lifetime = timedelta(days=60)
 DB_PATH = ROOT / "account.db"
 AUTO_LOGIN_ADMIN = False
