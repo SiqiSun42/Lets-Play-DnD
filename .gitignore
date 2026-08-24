@@ -1,0 +1,10 @@
+.env
+account.db
+Account/*
+!Account/.gitkeep
+
+venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+RAG/vector_db/

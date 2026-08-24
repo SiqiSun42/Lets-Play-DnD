@@ -1,0 +1,77 @@
+:root {
+    --font-top-bar: 18px;
+  }
+  
+  .top-bar {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 0 12px 0 20px;
+    min-height: 56px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-sidebar);
+    gap: 16px;
+  }
+  
+  .top-bar--simple {
+    grid-template-columns: 1fr auto;
+  }
+  
+  .top-bar-left {
+    justify-self: start;
+    min-width: 0;
+    padding-left: 4px;
+  }
+  
+  .top-bar-title {
+    font-size: var(--font-top-bar);
+    font-weight: 600;
+    color: var(--text-heading);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+    max-width: 280px;
+  }
+
+  .top-bar-right {
+    justify-self: end;
+    display: flex;
+    align-items: center;
+    padding-right: 0;
+    margin-right: -4px;
+  }
+  
+  .top-bar-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: none;
+    border: none;
+    color: var(--text-heading);
+    font-size: var(--font-top-bar);
+    cursor: pointer;
+    white-space: nowrap;
+    border-radius: 8px;
+    transition: background 0.15s;
+    flex-shrink: 0;
+  }
+  
+  .top-bar-btn:hover {
+    background: var(--bg-hover);
+  }
+  
+  .top-bar-btn:active,
+  .top-bar-btn.active {
+    background: var(--bg-active);
+  }
+  
+  .top-bar-btn-icon {
+    font-size: calc(var(--font-top-bar) - 2px);
+  }
+  
+  .top-bar-btn-label {
+    font-size: var(--font-top-bar);
+  }

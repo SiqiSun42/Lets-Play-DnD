@@ -1,0 +1,15 @@
+[
+    {
+      "role": "assistant",
+      "content": "你好，这是开场白。"
+    },
+    {
+      "role": "user",
+      "content": "我准备出发了。"
+    },
+    {
+      "role": "assistant",
+      "content": "好的，你看到了路口。",
+      "reasoning": "可选的思考过程"
+    }
+  ]
