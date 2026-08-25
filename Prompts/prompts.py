@@ -8,5 +8,10 @@ def _read_prompt(filename: str) -> str:
     with open(file_path, 'r', encoding='utf-8') as f:
         return f.read()
 
-DECISION_PROMPT = _read_prompt('decision.md')
-OUTPUT_PROMPT = _read_prompt('output.md')
+# 中文提示词
+DECISION_ZH_PROMPT = _read_prompt('consult/decision-zh.md')
+OUTPUT_ZH_PROMPT = _read_prompt('consult/output-zh.md')
+
+# 英文提示词
+DECISION_EN_PROMPT = _read_prompt('consult/decision-en.md')
+OUTPUT_EN_PROMPT = _read_prompt('consult/output-en.md')

@@ -1,23 +1,24 @@
 import os
-import fitz
+import pymupdf
 from sentence_transformers import SentenceTransformer
 import chromadb 
 
 # 导入文件
-PDF_DIR = "/Users/siqisun/学习/4.研一Summer/DnD Rule Books/"
-PDF_FILENAMES = ["城主指南.pdf", "玩家手册.pdf", "怪物图鉴.pdf"]
+PDF_DIR = "DnD Rule Books/"
+PDF_FILENAMES = []
 # 路径
 PDF_PATHS = [os.path.join(PDF_DIR, f) for f in PDF_FILENAMES]
 VECTOR_DB_PATH = os.path.join(os.path.dirname(__file__), "vector_db")
 # 参数
+BATCH_SIZE = 5000 # 英文版向量化有7270块，超过Chroma的默认batch 5461；中文版其实不需要
 MAX_CHUNK_SIZE = 500
-EMBEDDING_MODEL_NAME = "BAAI/bge-small-zh-v1.5"
+EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5" #中文版: BAAI/bge-small-zh-v1.5
 
 # ==================== 工具函数 ====================
 
 def load_pdf(filepath):
     """读取一个PDF文件, 返回全部内容"""
-    doc = fitz.open(filepath)
+    doc = pymupdf.open(filepath)
     text = ""
     for page in doc:
         text += page.get_text()
@@ -68,20 +69,25 @@ def main():
     # 4. 向量化
     embeddings = model.encode(chunks, show_progress_bar=True)
 
-    # 5. 存入 Chroma
+    # 5. 存入 Chroma: 记得切换zh/en
     chroma_client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
-    collection = chroma_client.get_or_create_collection("dnd_rules_zh")
+    collection = chroma_client.get_or_create_collection("dnd_rules_en")
 
     existing_ids = collection.get()["ids"]
     if existing_ids:
         collection.delete(ids=existing_ids)
         print(f"已清理 {len(existing_ids)} 条旧数据")
 
-    collection.add(
-        documents=chunks,
-        embeddings=embeddings.tolist(),
-        ids=[str(i) for i in range(len(chunks))]
-    )
+    # 6. 存入 Chroma。英文版会溢出，所以需要分批处理
+    total = len(chunks)
+    for start in range(0, total, BATCH_SIZE):
+        end = min(start + BATCH_SIZE, total)
+        collection.add(
+            documents=chunks[start:end],
+            embeddings=embeddings[start:end].tolist(),
+            ids=[str(i) for i in range(start, end)],
+        )
+        print(f"已写入 {end}/{total}")
 
 
 if __name__ == "__main__":
