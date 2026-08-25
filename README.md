@@ -21,38 +21,6 @@ LetsPlayDnD 是一个基于 Web 的龙与地下城（D&D 5e）辅助跑团项目
 | RAG | Chroma、sentence-transformers、PyMuPDF |
 | Embedding | `BAAI/bge-small-zh-v1.5`（中文）、`BAAI/bge-small-en-v1.5`（英文） |
 
-## 注意事项
-
-**部署路径**  
-前端请求使用相对路径（如 `api/me`、`login.html`），便于挂在子路径下；不要在 JS 里写以 `/` 开头的绝对 URL。
-
-**不要提交敏感与本地数据**  
-`.gitignore` 已忽略 `.env`、`account.db`、`Account/*`（保留 `Account/.gitkeep`）、`RAG/vector_db/`。向量库与账号数据请勿提交到 Git。
-
-**RAG 向量库不在 Git 里**  
-中英文规则索引位于 `RAG/vector_db/`，需在本机运行 `RAG/build_index.py` 生成；仓库 clone 后不会自带向量库。
-
-**Embedding 模型不在 requirements.txt 里**  
-`pip install -r requirements.txt` 只安装 Python 包。首次使用 RAG 前需预下载模型（见下方「安装」），否则会在线拉取且较慢。
-
-**小内存环境装依赖**  
-`sentence-transformers` 依赖 PyTorch。若本机/服务器内存较小且无 Swap，`pip install` 可能在下载 torch 时被系统 `Killed`；可尝试增加 Swap 或先安装 CPU 版 torch。
-
-**Chroma 单次写入上限**  
-`build_index.py` 若一次 `add` 过多 chunk 会报错，需分批写入（例如每批 5000 条）。
-
-**咨询 vs 游戏语言**  
-主页/咨询城主界面语言随用户设置变化（若没有立刻改变，刷新生效）；游戏存档的 `in_game_language` 则在创建时确定，之后切换界面语言不会改变该存档内部的语言设置。
-
-**密钥与 API Key**  
-`FLASK_SECRET_KEY` 用于 Session 与用户 API Key 加密。更换密钥后，已存的加密 API Key 需用户在设置里重新填写。
-
-**规则书 PDF**  
-索引脚本需本地 PDF（版权原因不入库）。`build_index.py` 中的 PDF 路径请在本机自行配置，勿将个人路径提交到公开仓库。
-
-**RAG 懒加载**  
-`consult` 在真正检索时才 `import RAG`，避免打开咨询页就加载 embedding；同一进程内首次检索仍可能较慢。
-
 ## 技术说明
 
 ### 环境要求
@@ -128,5 +96,38 @@ Tools/                 Function calling 工具定义
 Account/               用户数据（Git 忽略，仅 .gitkeep）
 Templates/user/        新用户目录模板
 ```
+
+## 注意事项
+
+**部署路径**  
+前端请求使用相对路径（如 `api/me`、`login.html`），便于挂在子路径下；不要在 JS 里写以 `/` 开头的绝对 URL。
+
+**不要提交敏感与本地数据**  
+`.gitignore` 已忽略 `.env`、`account.db`、`Account/*`（保留 `Account/.gitkeep`）、`RAG/vector_db/`。向量库与账号数据请勿提交到 Git。
+
+**RAG 向量库不在 Git 里**  
+中英文规则索引位于 `RAG/vector_db/`，需在本机运行 `RAG/build_index.py` 生成；仓库 clone 后不会自带向量库。
+
+**Embedding 模型不在 requirements.txt 里**  
+`pip install -r requirements.txt` 只安装 Python 包。首次使用 RAG 前需预下载模型（见下方「安装」），否则会在线拉取且较慢。
+
+**小内存环境装依赖**  
+`sentence-transformers` 依赖 PyTorch。若本机/服务器内存较小且无 Swap，`pip install` 可能在下载 torch 时被系统 `Killed`；可尝试增加 Swap 或先安装 CPU 版 torch。
+
+**Chroma 单次写入上限**  
+`build_index.py` 若一次 `add` 过多 chunk 会报错，需分批写入（例如每批 5000 条）。
+
+**咨询 vs 游戏语言**  
+主页/咨询城主界面语言随用户设置变化（若没有立刻改变，刷新生效）；游戏存档的 `in_game_language` 则在创建时确定，之后切换界面语言不会改变该存档内部的语言设置。
+
+**密钥与 API Key**  
+`FLASK_SECRET_KEY` 用于 Session 与用户 API Key 加密。更换密钥后，已存的加密 API Key 需用户在设置里重新填写。
+
+**规则书 PDF**  
+索引脚本需本地 PDF（版权原因不入库）。`build_index.py` 中的 PDF 路径请在本机自行配置，勿将个人路径提交到公开仓库。
+
+**RAG 懒加载**  
+`consult` 在真正检索时才 `import RAG`，避免打开咨询页就加载 embedding；同一进程内首次检索仍可能较慢。
+
 
 如有问题或建议，欢迎通过 Issue 反馈。
