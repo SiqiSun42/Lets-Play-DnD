@@ -10,7 +10,7 @@ PDF_FILENAMES = []
 PDF_PATHS = [os.path.join(PDF_DIR, f) for f in PDF_FILENAMES]
 VECTOR_DB_PATH = os.path.join(os.path.dirname(__file__), "vector_db")
 # 参数
-BATCH_SIZE = 5000 # 英文版向量化有7270块，超过Chroma的默认batch 5461；中文版其实不需要
+BATCH_SIZE = 5000 # 英文版向量化有7270块，超过Chroma的默认batch 5461；中文版是3081，其实不需要
 MAX_CHUNK_SIZE = 500
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5" #中文版: BAAI/bge-small-zh-v1.5
 
