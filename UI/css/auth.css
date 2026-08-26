@@ -398,3 +398,224 @@ body.is-leaving {
 .auth-help:focus-visible .auth-help-tip {
   display: block;
 }
+.auth-email-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+}
+
+.auth-email-status-left {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 16px;
+  color: rgba(245, 240, 230, 0.75);
+}
+
+.auth-email-status-value {
+  color: rgba(245, 240, 230, 0.75);
+}
+
+.auth-email-verify-btn {
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(245, 240, 230, 0.92);
+  color: #1a1a1a;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.auth-email-verify-btn:hover:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.auth-email-verify-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  pointer-events: none;
+}
+
+.auth-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 20px;
+}
+
+.auth-modal-overlay.hidden {
+  display: none;
+}
+
+.auth-modal {
+  width: min(420px, 100%);
+  border-radius: 12px;
+  background: #2a2a2a;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 20px;
+  color: #f5f0e6;
+}
+
+.auth-modal-title {
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.auth-modal-body {
+  min-height: 0;
+  margin-bottom: 0;
+  font-size: 14px;
+  color: rgba(245, 240, 230, 0.75);
+}
+
+.auth-modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auth-modal-field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 20px;
+}
+
+.auth-modal-label-with-help {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.auth-modal-field label {
+  font-size: 15px;
+  color: rgba(245, 240, 230, 0.75);
+}
+
+.auth-modal-field-error {
+  font-size: 12px;
+  line-height: 20px;
+  color: #e07070;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.auth-modal-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #f5f0e6;
+  font-size: 15px;
+  outline: none;
+}
+
+.auth-modal-field input.is-invalid {
+  border-color: #e07070;
+}
+
+.auth-modal-help {
+  position: relative;
+  border: none;
+  background: none;
+  padding: 0;
+  color: rgba(245, 240, 230, 0.55);
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+}
+
+.auth-modal-help-tip {
+  display: none;
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 5px);
+  width: 220px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #333;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #f5f0e6;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.auth-modal-help:hover .auth-modal-help-tip,
+.auth-modal-help:focus-visible .auth-modal-help-tip {
+  display: block;
+}
+
+.auth-modal-code-row {
+  display: grid;
+  grid-template-columns: 3fr 1fr;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.auth-modal-code-row input {
+  min-width: 0;
+}
+
+.auth-modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.auth-modal-btn {
+  padding: 11px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: transparent;
+  color: #f5f0e6;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auth-modal-btn-primary {
+  background: #f5f0e6;
+  border-color: #f5f0e6;
+  color: #1a1a1a;
+}
+
+.auth-modal-btn-primary:disabled,
+.auth-modal-btn-primary.is-success {
+  cursor: default;
+  filter: brightness(0.85);
+  pointer-events: none;
+}
+
+.auth-modal-send {
+  width: 100%;
+  white-space: nowrap;
+  padding-left: 8px;
+  padding-right: 8px;
+  font-size: 13px;
+}

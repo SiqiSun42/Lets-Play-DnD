@@ -5,6 +5,8 @@ import sqlite3
 import shutil
 import os
 import base64
+import secrets
+import re
 from dotenv import load_dotenv
 from cryptography.fernet import Fernet, InvalidToken
 from datetime import datetime, timezone, timedelta
@@ -208,6 +210,56 @@ def change_password():
     conn.close()
     return jsonify({"ok": True})
 
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+_email_verify_codes = {}
+_reg_email_codes = {}
+_reg_email_verified = {}
+
+def _normalize_email_code(raw):
+    return re.sub(r"\D", "", str(raw or ""))
+
+def _send_verification_email(to_email, code):
+    print(f"[email-verify] to={to_email} code={code}", flush=True)
+
+@app.post("/api/email/send-code")
+def send_email_code():
+    username = session.get("username")
+    if not username:
+        return jsonify({"error": "not logged in"}), 401
+    body = request.get_json() or {}
+    email = (body.get("email") or "").strip()
+    if not email:
+        return jsonify({"error": "missing_email"}), 400
+    if not _EMAIL_RE.match(email) or email.endswith("@local.invalid"):
+        return jsonify({"error": "invalid_email"}), 400
+
+    conn = get_db()
+    taken = conn.execute(
+        "SELECT id FROM users WHERE email = ? AND username != ?",
+        (email, username),
+    ).fetchone()
+    conn.close()
+    if taken:
+        return jsonify({"error": "email_taken"}), 409
+
+    now = datetime.now(timezone.utc)
+    prev = _email_verify_codes.get(username)
+    if prev and (now - prev["sent_at"]).total_seconds() < 60:
+        left = int(60 - (now - prev["sent_at"]).total_seconds())
+        if left < 1:
+            left = 1
+        return jsonify({"error": "too_fast", "retry_after": left}), 429
+
+    code = f"{secrets.randbelow(1000000):06d}"
+    _email_verify_codes[username] = {
+        "email": email,
+        "code": code,
+        "expires_at": now + timedelta(minutes=10),
+        "sent_at": now,
+    }
+    _send_verification_email(email, code)
+    return jsonify({"ok": True})
+
 @app.post("/api/change-email")
 def change_email():
     username = session.get("username")
@@ -216,18 +268,25 @@ def change_email():
     body = request.get_json() or {}
     email = (body.get("email") or "").strip()
     unbind = bool(body.get("unbind"))
+    code = _normalize_email_code(body.get("code"))
 
-    if unbind or not email:
+    if unbind:
         email_to_store = f"{username}@local.invalid"
     else:
-        if "@" not in email or email.endswith("@local.invalid"):
-            return jsonify({"error": "invalid_email"}), 400
+        pending = _email_verify_codes.get(username)
+        now = datetime.now(timezone.utc)
+        if (
+            not pending
+            or pending["email"] != email
+            or pending["code"] != code
+            or now > pending["expires_at"]
+        ):
+            return jsonify({"error": "code_mismatch"}), 400
         email_to_store = email
 
     conn = get_db()
     if (
         not unbind
-        and email
         and conn.execute(
             "SELECT id FROM users WHERE email = ? AND username != ?",
             (email_to_store, username),
@@ -245,7 +304,60 @@ def change_email():
         "SELECT * FROM users WHERE username = ?", (username,)
     ).fetchone()
     conn.close()
+    if not unbind:
+        _email_verify_codes.pop(username, None)
     return jsonify({"ok": True, "user": user_public(row)})
+
+@app.post("/api/register/send-code")
+def register_send_code():
+    body = request.get_json() or {}
+    email = (body.get("email") or "").strip()
+    if not email:
+        return jsonify({"error": "missing_email"}), 400
+    if not _EMAIL_RE.match(email) or email.endswith("@local.invalid"):
+        return jsonify({"error": "invalid_email"}), 400
+
+    conn = get_db()
+    taken = conn.execute(
+        "SELECT id FROM users WHERE email = ?", (email,)
+    ).fetchone()
+    conn.close()
+    if taken:
+        return jsonify({"error": "email_taken"}), 409
+
+    now = datetime.now(timezone.utc)
+    prev = _reg_email_codes.get(email)
+    if prev and (now - prev["sent_at"]).total_seconds() < 60:
+        left = int(60 - (now - prev["sent_at"]).total_seconds())
+        if left < 1:
+            left = 1
+        return jsonify({"error": "too_fast", "retry_after": left}), 429
+
+    code = f"{secrets.randbelow(1000000):06d}"
+    _reg_email_codes[email] = {
+        "code": code,
+        "expires_at": now + timedelta(minutes=10),
+        "sent_at": now,
+    }
+    _send_verification_email(email, code)
+    return jsonify({"ok": True})
+
+@app.post("/api/register/verify-email")
+def register_verify_email():
+    body = request.get_json() or {}
+    email = (body.get("email") or "").strip()
+    code = _normalize_email_code(body.get("code"))
+    pending = _reg_email_codes.get(email)
+    now = datetime.now(timezone.utc)
+    if (
+        not pending
+        or pending["code"] != code
+        or now > pending["expires_at"]
+    ):
+        return jsonify({"error": "code_mismatch"}), 400
+    _reg_email_codes.pop(email, None)
+    _reg_email_verified[email] = now + timedelta(minutes=30)
+    return jsonify({"ok": True, "email": email})
 
 @app.post("/api/register")
 def register():
@@ -259,6 +371,12 @@ def register():
 
     if not username or not password:
         return jsonify({"error": "missing fields"}), 400
+
+    if email:
+        now = datetime.now(timezone.utc)
+        verified_until = _reg_email_verified.get(email)
+        if not verified_until or now > verified_until:
+            return jsonify({"error": "email_not_verified"}), 400
 
     email_to_store = email if email else f"{username}@local.invalid"
 
@@ -281,6 +399,9 @@ def register():
     )
     conn.commit()
     conn.close()
+
+    if email:
+        _reg_email_verified.pop(email, None)
 
     init_account_dir(username, language)
 
@@ -509,8 +630,28 @@ def consult_messages():
     except KeyError:
         language = "zh-CN"
 
-    messages = load_for_ui(username, language)
-    return jsonify({"messages": messages, "language": language})
+    before_raw = (request.args.get("before_id") or "").strip()
+    before_id = None
+    if before_raw:
+        try:
+            before_id = int(before_raw)
+        except ValueError:
+            return jsonify({"error": "invalid before_id"}), 400
+
+    limit_raw = (request.args.get("limit") or "").strip()
+    limit = 20
+    if limit_raw:
+        try:
+            limit = min(max(int(limit_raw), 1), 50)
+        except ValueError:
+            return jsonify({"error": "invalid limit"}), 400
+
+    data = load_for_ui(username, language, before_id=before_id, limit=limit)
+    return jsonify({
+        "messages": data["messages"],
+        "has_more": data["has_more"],
+        "language": language,
+    })
 
 @app.post("/api/consult/clear")
 def consult_clear():

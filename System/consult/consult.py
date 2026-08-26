@@ -39,18 +39,70 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.commit()
     return conn
 
-def _rows_for_ui(conn: sqlite3.Connection) -> list:
-    rows = conn.execute(
-        "SELECT role, content, reasoning FROM messages ORDER BY id DESC LIMIT 20"
-    ).fetchall()
+def _rows_for_ui(conn: sqlite3.Connection, *, before_id: int = None, limit: int = 20) -> tuple:
+    if before_id is not None:
+        rows = conn.execute(
+            "SELECT id, role, content, reasoning FROM messages "
+            "WHERE id < ? ORDER BY id DESC LIMIT ?",
+            (before_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, role, content, reasoning FROM messages "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
     rows = list(reversed(rows))
     result = []
-    for role, content, reasoning in rows:
-        item = {"role": role, "content": content}
+    for msg_id, role, content, reasoning in rows:
+        item = {"id": msg_id, "role": role, "content": content}
         if reasoning:
             item["reasoning"] = reasoning
         result.append(item)
-    return result
+
+    has_more = False
+    if result:
+        oldest_id = result[0]["id"]
+        older = conn.execute(
+            "SELECT 1 FROM messages WHERE id < ? LIMIT 1",
+            (oldest_id,),
+        ).fetchone()
+        has_more = older is not None
+
+    return result, has_more
+
+def load_for_ui(
+    username: str,
+    language: str,
+    *,
+    before_id: int = None,
+    limit: int = 20,
+) -> dict:
+    path = consult_db_path(username)
+    if not path.is_file():
+        if before_id is not None:
+            return {"messages": [], "has_more": False}
+        return {
+            "messages": [{"role": "assistant", "content": opening_text(language)}],
+            "has_more": False,
+        }
+
+    conn = _connect(path)
+    n = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    if n == 0:
+        conn.close()
+        path.unlink(missing_ok=True)
+        if before_id is not None:
+            return {"messages": [], "has_more": False}
+        return {
+            "messages": [{"role": "assistant", "content": opening_text(language)}],
+            "has_more": False,
+        }
+
+    messages, has_more = _rows_for_ui(conn, before_id=before_id, limit=limit)
+    conn.close()
+    return {"messages": messages, "has_more": has_more}
 
 def _rows_for_model(conn: sqlite3.Connection) -> list:
     rows = conn.execute(
@@ -58,22 +110,6 @@ def _rows_for_model(conn: sqlite3.Connection) -> list:
     ).fetchall()
     rows = list(reversed(rows))
     return [{"role": role, "content": content} for role, content in rows]
-
-def load_for_ui(username: str, language: str) -> list:
-    path = consult_db_path(username)
-    if not path.is_file():
-        return [{"role": "assistant", "content": opening_text(language)}]
-
-    conn = _connect(path)
-    n = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    if n == 0:
-        conn.close()
-        path.unlink(missing_ok=True)
-        return [{"role": "assistant", "content": opening_text(language)}]
-
-    messages = _rows_for_ui(conn)
-    conn.close()
-    return messages
 
 def append_message(username: str, role: str, content: str, reasoning: str = None) -> None:
     path = consult_db_path(username)

@@ -86,6 +86,7 @@ function displayEmail(email) {
 }
 
 function renderAccountManage() {
+  stopEmailCodeCooldown();
   const user = window.AppState?.user || { username: getCurrentAccount(), email: '' };
   const body = document.getElementById('account-manage-body');
   body.innerHTML = `
@@ -304,17 +305,25 @@ function renderChangeEmail() {
             </button>
           </div>
           <span class="account-field-error" id="email-new-error"></span>
-        </div>      
-          <div class="account-email-wrap">
-            <input id="email-new" type="text" value="${shown}" placeholder="${t('newEmailPlaceholder')}" autocomplete="email">
-            <button type="button" class="account-email-clear" id="btn-email-unbind" aria-label="${t('unbindEmail')}">
-              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                <path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v9H7V9zm-1 12h12a1 1 0 0 0 1-1V7H5v13a1 1 0 0 0 1 1z"/>
-              </svg>
-            </button>
-          </div>
         </div>
-        <div class="account-form-actions">
+        <div class="account-code-row">
+          <input id="email-new" type="text" value="${shown}" placeholder="${t('newEmailPlaceholder')}" autocomplete="email">
+          <button type="button" class="account-form-btn account-form-btn-primary account-code-send" id="btn-email-unbind">${t('unbindEmail')}</button>
+        </div>
+      </div>
+      <div class="account-form-field">
+        <div class="account-field-head">
+          <div class="account-label-with-help">
+            <label for="email-code">${t('verificationCode')}</label>
+          </div>
+          <span class="account-field-error" id="email-code-error"></span>
+        </div>
+        <div class="account-code-row">
+          <input id="email-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="${t('verificationCodePlaceholder')}" maxlength="7">
+          <button type="button" class="account-form-btn account-form-btn-primary account-code-send" id="btn-email-send-code">${t('sendVerificationCode')}</button>
+        </div>
+      </div>
+      <div class="account-form-actions">
         <button type="button" class="account-form-btn" id="btn-email-back">${t('back')}</button>
         <button type="submit" class="account-form-btn account-form-btn-primary" id="btn-email-save">${t('savePassword')}</button>
       </div>
@@ -324,17 +333,41 @@ function renderChangeEmail() {
   document.getElementById('btn-email-back').addEventListener('click', renderAccountManage);
   document.getElementById('btn-email-unbind').addEventListener('click', onUnbindEmail);
   document.getElementById('change-email-form').addEventListener('submit', onSaveEmail);
+  document.getElementById('btn-email-send-code').addEventListener('click', onSendEmailCode);
 }
 
 function clearEmailFieldError() {
-  document.getElementById('email-new-error').textContent = '';
-  document.getElementById('email-new').classList.remove('is-invalid');
+  const err = document.getElementById('email-new-error');
+  const input = document.getElementById('email-new');
+  if (err) err.textContent = '';
+  if (input) input.classList.remove('is-invalid');
 }
 
 function showEmailFieldError(message) {
-  document.getElementById('email-new-error').textContent = message;
-  document.getElementById('email-new').classList.add('is-invalid');
-  document.getElementById('email-new').focus();
+  const err = document.getElementById('email-new-error');
+  const input = document.getElementById('email-new');
+  if (err) err.textContent = message;
+  if (input) {
+    input.classList.add('is-invalid');
+    input.focus();
+  }
+}
+
+function clearCodeFieldError() {
+  const err = document.getElementById('email-code-error');
+  const input = document.getElementById('email-code');
+  if (err) err.textContent = '';
+  if (input) input.classList.remove('is-invalid');
+}
+
+function showCodeFieldError(message) {
+  const err = document.getElementById('email-code-error');
+  const input = document.getElementById('email-code');
+  if (err) err.textContent = message;
+  if (input) {
+    input.classList.add('is-invalid');
+    input.focus();
+  }
 }
 
 function applyUserUpdate(user) {
@@ -343,13 +376,101 @@ function applyUserUpdate(user) {
   }
 }
 
+function normalizeEmailCode(raw) {
+  return String(raw || '').replace(/\D/g, '');
+}
+
+let emailCodeCooldownTimer = null;
+
+function stopEmailCodeCooldown() {
+  if (emailCodeCooldownTimer) {
+    clearInterval(emailCodeCooldownTimer);
+    emailCodeCooldownTimer = null;
+  }
+}
+
+function startEmailCodeCooldown(seconds) {
+  stopEmailCodeCooldown();
+  const sendBtn = document.getElementById('btn-email-send-code');
+  if (!sendBtn) return;
+
+  let left = seconds;
+  sendBtn.disabled = true;
+  sendBtn.classList.remove('is-success');
+  sendBtn.textContent = `${t('resendVerificationCode')} ${left}s`;
+
+  emailCodeCooldownTimer = setInterval(() => {
+    left -= 1;
+    const btn = document.getElementById('btn-email-send-code');
+    if (!btn) {
+      stopEmailCodeCooldown();
+      return;
+    }
+    if (left <= 0) {
+      stopEmailCodeCooldown();
+      btn.disabled = false;
+      btn.textContent = t('resendVerificationCode');
+      return;
+    }
+    btn.textContent = `${t('resendVerificationCode')} ${left}s`;
+  }, 1000);
+}
+
+async function onSendEmailCode() {
+  clearEmailFieldError();
+  clearCodeFieldError();
+  const email = document.getElementById('email-new').value.trim();
+  if (!email) {
+    showEmailFieldError(t('emailMissing'));
+    return;
+  }
+  if (!EMAIL_RE.test(email) || email.endsWith('@local.invalid')) {
+    showEmailFieldError(t('emailInvalid'));
+    return;
+  }
+
+  const sendBtn = document.getElementById('btn-email-send-code');
+  if (sendBtn.disabled) return;
+  sendBtn.disabled = true;
+  try {
+    const res = await fetch('api/email/send-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (data.error === 'email_taken') {
+        showEmailFieldError(t('emailTaken'));
+      } else if (data.error === 'missing_email') {
+        showEmailFieldError(t('emailMissing'));
+      } else if (data.error === 'too_fast') {
+        const wait = Math.max(1, Number(data.retry_after) || 60);
+        startEmailCodeCooldown(wait);
+        return;
+      } else {
+        showEmailFieldError(t('emailInvalid'));
+      }
+      sendBtn.disabled = false;
+      return;
+    }
+    startEmailCodeCooldown(60);
+  } catch {
+    showEmailFieldError(t('emailInvalid'));
+    sendBtn.disabled = false;
+  }
+}
+
 async function onSaveEmail(e) {
   e.preventDefault();
   clearEmailFieldError();
-  const email = document.getElementById('email-new').value.trim();
+  clearCodeFieldError();
 
-  if (!email || !EMAIL_RE.test(email) || email.endsWith('@local.invalid')) {
-    showEmailFieldError(t('emailInvalid'));
+  const email = document.getElementById('email-new').value.trim();
+  const code = normalizeEmailCode(document.getElementById('email-code').value);
+
+  if (!code) {
+    showCodeFieldError(t('codeMissing'));
     return;
   }
 
@@ -358,13 +479,11 @@ async function onSaveEmail(e) {
     const res = await fetch('api/change-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, code }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      showEmailFieldError(
-        data.error === 'email_taken' ? t('emailTaken') : t('emailInvalid')
-      );
+      showCodeFieldError(t('codeMismatch'));
       return;
     }
     applyUserUpdate(data.user);
@@ -373,13 +492,18 @@ async function onSaveEmail(e) {
     saveBtn.textContent = t('emailChangeSuccess');
     setTimeout(() => renderAccountManage(), 500);
   } catch {
-    showEmailFieldError(t('emailInvalid'));
+    showCodeFieldError(t('codeMismatch'));
   }
 }
 
 async function onUnbindEmail() {
   clearEmailFieldError();
-  const saveBtn = document.getElementById('btn-email-save');
+  clearCodeFieldError();
+  const unbindBtn = document.getElementById('btn-email-unbind');
+  unbindBtn.disabled = true;
+  unbindBtn.classList.add('is-success');
+  unbindBtn.textContent = t('emailUnbinding');
+
   try {
     const res = await fetch('api/change-email', {
       method: 'POST',
@@ -387,13 +511,12 @@ async function onUnbindEmail() {
       body: JSON.stringify({ unbind: true }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return;
-    applyUserUpdate(data.user);
-    saveBtn.disabled = true;
-    saveBtn.classList.add('is-success');
-    saveBtn.textContent = t('emailUnbound');
-    setTimeout(() => renderAccountManage(), 500);
+    if (res.ok && data.user) {
+      applyUserUpdate(data.user);
+    }
   } catch {}
+
+  setTimeout(() => renderAccountManage(), 500);
 }
 
 function renderDeleteAccount() {

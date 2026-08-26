@@ -102,11 +102,258 @@ const USERNAME_RE = /^[A-Za-z][A-Za-z0-9_-]{2,31}$/;
 const PASSWORD_RE = /^[A-Za-z0-9_]{6,64}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function clearRegisterFieldErrors() {
-  ['reg-username', 'reg-password', 'reg-confirm', 'reg-email'].forEach(id => {
-    document.getElementById(`${id}-error`).textContent = '';
-    document.getElementById(id).classList.remove('is-invalid');
+let registerVerifiedEmail = '';
+
+function syncRegEmailStatusRow() {
+  const valueEl = document.getElementById('reg-email-status');
+  const btn = document.getElementById('btn-reg-verify-email');
+  if (!valueEl || !btn) return;
+  const bound = !!registerVerifiedEmail;
+  valueEl.textContent = bound ? t('emailBound') : t('emailNotBound');
+  btn.disabled = false;
+  btn.textContent = t('verifyEmail');
+}
+
+function clearRegModalEmailError() {
+  const err = document.getElementById('reg-modal-email-error');
+  const input = document.getElementById('reg-modal-email');
+  if (err) err.textContent = '';
+  if (input) input.classList.remove('is-invalid');
+}
+
+function showRegModalEmailError(message) {
+  const err = document.getElementById('reg-modal-email-error');
+  const input = document.getElementById('reg-modal-email');
+  if (err) err.textContent = message;
+  if (input) {
+    input.classList.add('is-invalid');
+    input.focus();
+  }
+}
+
+function clearRegModalCodeError() {
+  const err = document.getElementById('reg-modal-code-error');
+  const input = document.getElementById('reg-modal-code');
+  if (err) err.textContent = '';
+  if (input) input.classList.remove('is-invalid');
+}
+
+function showRegModalCodeError(message) {
+  const err = document.getElementById('reg-modal-code-error');
+  const input = document.getElementById('reg-modal-code');
+  if (err) err.textContent = message;
+  if (input) {
+    input.classList.add('is-invalid');
+    input.focus();
+  }
+}
+
+function normalizeRegEmailCode(raw) {
+  return String(raw || '').replace(/\D/g, '');
+}
+
+let regEmailCodeCooldownTimer = null;
+
+function stopRegEmailCodeCooldown() {
+  if (regEmailCodeCooldownTimer) {
+    clearInterval(regEmailCodeCooldownTimer);
+    regEmailCodeCooldownTimer = null;
+  }
+}
+
+function startRegEmailCodeCooldown(seconds) {
+  stopRegEmailCodeCooldown();
+  const sendBtn = document.getElementById('btn-reg-modal-send-code');
+  if (!sendBtn) return;
+
+  let left = seconds;
+  sendBtn.disabled = true;
+  sendBtn.classList.remove('is-success');
+  sendBtn.textContent = `${t('resendVerificationCode')} ${left}s`;
+
+  regEmailCodeCooldownTimer = setInterval(() => {
+    left -= 1;
+    const btn = document.getElementById('btn-reg-modal-send-code');
+    if (!btn) {
+      stopRegEmailCodeCooldown();
+      return;
+    }
+    if (left <= 0) {
+      stopRegEmailCodeCooldown();
+      btn.disabled = false;
+      btn.textContent = t('resendVerificationCode');
+      return;
+    }
+    btn.textContent = `${t('resendVerificationCode')} ${left}s`;
+  }, 1000);
+}
+
+function closeRegEmailModal() {
+  stopRegEmailCodeCooldown();
+  const modal = document.getElementById('reg-email-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function openRegEmailModal() {
+  const modal = document.getElementById('reg-email-modal');
+  const title = document.getElementById('reg-email-modal-title');
+  const body = document.getElementById('reg-email-modal-body');
+  if (!modal || !title || !body) return;
+
+  title.textContent = t('verifyEmailTitle');
+  body.innerHTML = `
+    <form class="auth-modal-form" id="reg-email-verify-form">
+      <div class="auth-modal-field">
+        <div class="auth-modal-field-head">
+          <div class="auth-modal-label-with-help">
+            <label for="reg-modal-email">${t('newEmail')}</label>
+            <button type="button" class="auth-modal-help" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+                <path fill="currentColor" d="M12 17a1.2 1.2 0 1 1 0-2.4A1.2 1.2 0 0 1 12 17zm1-4.2h-2c0-1.7 1.6-1.9 1.6-3.1 0-.7-.5-1.2-1.3-1.2-.9 0-1.4.5-1.4 1.4H8.5C8.5 8.2 10 7 12.1 7c1.9 0 3.2 1.1 3.2 2.7 0 1.8-1.7 2.2-2.3 3.1z"/>
+              </svg>
+              <span class="auth-modal-help-tip">${t('tipVerifyEmail')}</span>
+            </button>
+          </div>
+          <span class="auth-modal-field-error" id="reg-modal-email-error"></span>
+        </div>
+        <input id="reg-modal-email" type="text" placeholder="${t('newEmailPlaceholder')}" autocomplete="email">
+      </div>
+      <div class="auth-modal-field">
+        <div class="auth-modal-field-head">
+          <div class="auth-modal-label-with-help">
+            <label for="reg-modal-code">${t('verificationCode')}</label>
+          </div>
+          <span class="auth-modal-field-error" id="reg-modal-code-error"></span>
+        </div>
+        <div class="auth-modal-code-row">
+          <input id="reg-modal-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="${t('verificationCodePlaceholder')}" maxlength="7">
+          <button type="button" class="auth-modal-btn auth-modal-btn-primary auth-modal-send" id="btn-reg-modal-send-code">${t('sendVerificationCode')}</button>
+        </div>
+      </div>
+      <div class="auth-modal-actions">
+        <button type="button" class="auth-modal-btn" id="btn-reg-modal-back">${t('back')}</button>
+        <button type="submit" class="auth-modal-btn auth-modal-btn-primary" id="btn-reg-modal-save">${t('savePassword')}</button>
+      </div>
+    </form>
+  `;
+
+  if (registerVerifiedEmail) {
+    document.getElementById('reg-modal-email').value = registerVerifiedEmail;
+  }
+
+  document.getElementById('btn-reg-modal-back').addEventListener('click', closeRegEmailModal);
+  document.getElementById('btn-reg-modal-send-code').addEventListener('click', onRegModalSendCode);
+  document.getElementById('reg-email-verify-form').addEventListener('submit', onRegModalSave);
+
+  modal.classList.remove('hidden');
+}
+
+function applyRegisterEmailBound(email) {
+  registerVerifiedEmail = (email || '').trim();
+  closeRegEmailModal();
+  syncRegEmailStatusRow();
+}
+
+async function onRegModalSendCode() {
+  clearRegModalEmailError();
+  clearRegModalCodeError();
+  const email = document.getElementById('reg-modal-email').value.trim();
+  if (!email) {
+    showRegModalEmailError(t('emailMissing'));
+    return;
+  }
+  if (!EMAIL_RE.test(email) || email.endsWith('@local.invalid')) {
+    showRegModalEmailError(t('emailInvalid'));
+    return;
+  }
+
+  const sendBtn = document.getElementById('btn-reg-modal-send-code');
+  if (sendBtn.disabled) return;
+  sendBtn.disabled = true;
+  try {
+    const res = await fetch('api/register/send-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (data.error === 'email_taken') {
+        showRegModalEmailError(t('emailTaken'));
+      } else if (data.error === 'missing_email') {
+        showRegModalEmailError(t('emailMissing'));
+      } else if (data.error === 'too_fast') {
+        const wait = Math.max(1, Number(data.retry_after) || 60);
+        startRegEmailCodeCooldown(wait);
+        return;
+      } else {
+        showRegModalEmailError(t('emailInvalid'));
+      }
+      sendBtn.disabled = false;
+      return;
+    }
+    startRegEmailCodeCooldown(60);
+  } catch {
+    showRegModalEmailError(t('emailInvalid'));
+    sendBtn.disabled = false;
+  }
+}
+
+async function onRegModalSave(e) {
+  e.preventDefault();
+  clearRegModalEmailError();
+  clearRegModalCodeError();
+
+  const email = document.getElementById('reg-modal-email').value.trim();
+  const code = normalizeRegEmailCode(document.getElementById('reg-modal-code').value);
+
+  if (!code) {
+    showRegModalCodeError(t('codeMissing'));
+    return;
+  }
+
+  const saveBtn = document.getElementById('btn-reg-modal-save');
+  try {
+    const res = await fetch('api/register/verify-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showRegModalCodeError(t('codeMismatch'));
+      return;
+    }
+    saveBtn.disabled = true;
+    saveBtn.classList.add('is-success');
+    saveBtn.textContent = t('emailChangeSuccess');
+    setTimeout(() => {
+      applyRegisterEmailBound(data.email || email);
+    }, 500);
+  } catch {
+    showRegModalCodeError(t('codeMismatch'));
+  }
+}
+
+function bindRegEmailModalOnce() {
+  const modal = document.getElementById('reg-email-modal');
+  if (!modal || modal.dataset.bound === '1') return;
+  modal.dataset.bound = '1';
+  modal.addEventListener('click', e => {
+    if (e.target === modal) closeRegEmailModal();
   });
+}
+
+function clearRegisterFieldErrors() {
+  ['reg-username', 'reg-password', 'reg-confirm'].forEach(id => {
+    const err = document.getElementById(`${id}-error`);
+    const input = document.getElementById(id);
+    if (err) err.textContent = '';
+    if (input) input.classList.remove('is-invalid');
+  });
+  const emailErr = document.getElementById('reg-email-error');
+  if (emailErr) emailErr.textContent = '';
 }
 
 function validateRegisterForm() {
@@ -115,7 +362,7 @@ function validateRegisterForm() {
   const username = document.getElementById('reg-username').value.trim();
   const password = document.getElementById('reg-password').value;
   const confirm = document.getElementById('reg-confirm').value;
-  const email = document.getElementById('reg-email').value.trim();
+  const email = registerVerifiedEmail;
 
   if (!username) {
     showFieldError('reg-username', 'reg-username-error', t('regMissingUsername'));
@@ -139,10 +386,6 @@ function validateRegisterForm() {
   }
   if (password !== confirm) {
     showFieldError('reg-confirm', 'reg-confirm-error', t('regPasswordMismatch'));
-    return null;
-  }
-  if (email && !EMAIL_RE.test(email)) {
-    showFieldError('reg-email', 'reg-email-error', t('regInvalidEmail'));
     return null;
   }
 
@@ -173,7 +416,11 @@ function bindRegisterForm() {
         if (result.error === 'username_taken') {
           showFieldError('reg-username', 'reg-username-error', t('regUsernameTaken'));
         } else if (result.error === 'email_taken') {
-          showFieldError('reg-email', 'reg-email-error', t('regEmailTaken'));
+          const emailErr = document.getElementById('reg-email-error');
+          if (emailErr) emailErr.textContent = t('regEmailTaken');
+        } else if (result.error === 'email_not_verified') {
+          const emailErr = document.getElementById('reg-email-error');
+          if (emailErr) emailErr.textContent = t('emailNotVerified');
         } else {
           showFieldError('reg-username', 'reg-username-error', t('regUsernameTaken'));
         }
@@ -185,6 +432,7 @@ function bindRegisterForm() {
       submitBtn.textContent = t('regSuccess');
       setTimeout(() => {
         authMode = 'login';
+        registerVerifiedEmail = '';
         renderAuth();
       }, 500);
     } catch {
@@ -335,21 +583,15 @@ function renderRegisterForm() {
         </div>
       </div>
       <div class="auth-field">
-      <div class="auth-field-head">
-        <div class="auth-label-with-help">
-          <label for="reg-email">${t('email')}</label>
-          <button type="button" class="auth-help" tabindex="-1">
-            <svg class="auth-help-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-              <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
-              <path fill="currentColor" d="M12 17a1.2 1.2 0 1 1 0-2.4A1.2 1.2 0 0 1 12 17zm1-4.2h-2c0-1.7 1.6-1.9 1.6-3.1 0-.7-.5-1.2-1.3-1.2-.9 0-1.4.5-1.4 1.4H8.5C8.5 8.2 10 7 12.1 7c1.9 0 3.2 1.1 3.2 2.7 0 1.8-1.7 2.2-2.3 3.1z"/>
-            </svg>
-            <span class="auth-help-tip">${t('tipEmail')}</span>
-          </button>
+        <div class="auth-email-status-row">
+          <div class="auth-email-status-left">
+            <span>${t('email')}:</span>
+            <span class="auth-email-status-value" id="reg-email-status">${registerVerifiedEmail ? t('emailBound') : t('emailNotBound')}</span>
+          </div>
+          <button type="button" class="auth-email-verify-btn" id="btn-reg-verify-email">${t('verifyEmail')}</button>
         </div>
         <span class="auth-field-error" id="reg-email-error"></span>
       </div>
-      <input id="reg-email" name="email" type="text" placeholder="${t('emailPlaceholder')}" autocomplete="email">
-    </div>
       <button type="submit" class="auth-submit">${t('createUser')}</button>
       <div class="auth-footer">
         <button type="button" class="auth-footer-btn" id="btn-back-login">${t('backToLogin')}</button>
@@ -366,10 +608,14 @@ function renderRegisterForm() {
   bindLangToggle();
   document.getElementById('btn-back-login').addEventListener('click', () => {
     authMode = 'login';
+    registerVerifiedEmail = '';
     renderAuth();
   });
   bindRegisterForm();
   bindPasswordEyes();
+  bindRegEmailModalOnce();
+  syncRegEmailStatusRow();
+  document.getElementById('btn-reg-verify-email').addEventListener('click', openRegEmailModal);
 }
 
 function renderAuth() {

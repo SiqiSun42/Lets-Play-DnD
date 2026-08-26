@@ -1,9 +1,15 @@
 const VIEW_SESSION_KEY = 'dnd-active-session';
 
+function viewSessionStorageKey() {
+  const account = window.AppState?.account || '';
+  return account ? `${VIEW_SESSION_KEY}:${account}` : VIEW_SESSION_KEY;
+}
+
 function sessionKey(session) {
   if (!session || !session.type) return '';
   if (session.type === 'consult') return 'consult';
   if (session.type === 'save') return `save:${session.id || ''}`;
+  if (session.type === 'home') return 'home';
   return '';
 }
 
@@ -12,25 +18,49 @@ function sameSession(a, b) {
 }
 
 function persistViewSession(session) {
-  if (!session) {
+  const key = viewSessionStorageKey();
+  if (!session || session.type === 'home') {
+    localStorage.removeItem(key);
     sessionStorage.removeItem(VIEW_SESSION_KEY);
     return;
   }
-  sessionStorage.setItem(VIEW_SESSION_KEY, JSON.stringify(session));
+  const payload = {
+    ...session,
+    account: window.AppState?.account || null,
+  };
+  localStorage.setItem(key, JSON.stringify(payload));
+  sessionStorage.removeItem(VIEW_SESSION_KEY);
 }
 
 function readPersistedViewSession() {
   try {
-    const raw = sessionStorage.getItem(VIEW_SESSION_KEY);
+    const key = viewSessionStorageKey();
+    let raw = localStorage.getItem(key);
+    if (!raw) {
+      raw = sessionStorage.getItem(VIEW_SESSION_KEY);
+    }
     if (!raw) return null;
-    return JSON.parse(raw);
+    const data = JSON.parse(raw);
+    if (data.account && window.AppState?.account && data.account !== window.AppState.account) {
+      return null;
+    }
+    if (data.type === 'home') return null;
+    return data;
   } catch {
     return null;
   }
 }
 
 function clearPersistedViewSession() {
+  const key = viewSessionStorageKey();
+  localStorage.removeItem(key);
   sessionStorage.removeItem(VIEW_SESSION_KEY);
+  try {
+    Object.keys(localStorage)
+      .filter(k => k === VIEW_SESSION_KEY || k.startsWith(VIEW_SESSION_KEY + ':'))
+      .forEach(k => localStorage.removeItem(k));
+  } catch {
+  }
 }
 
 function chatUiText(key) {
@@ -166,6 +196,10 @@ function chatTitleForSession(session) {
     window.activeSession = session;
     persistViewSession(session);
   
+    if (typeof syncTopBarNotesButton === 'function') {
+      syncTopBarNotesButton();
+    }
+  
     const title = document.getElementById('view-title');
     if (title) title.textContent = chatTitleForSession(session);
   
@@ -188,7 +222,19 @@ function chatTitleForSession(session) {
 function restoreViewFromSession() {
   const session = readPersistedViewSession();
   if (!session || !session.type) return false;
-  if (session.type === 'save' && !session.id) return false;
+  if (session.type === 'save') {
+    if (!session.id) return false;
+    if (typeof metaCache !== 'undefined' && Array.isArray(metaCache)) {
+      const exists = metaCache.some(s => s.id === session.id);
+      if (!exists) {
+        clearPersistedViewSession();
+        return false;
+      }
+    }
+  }
+  if (session.type !== 'consult' && session.type !== 'save') {
+    return false;
+  }
   openChatSession(session, { force: true });
   return true;
 }
@@ -204,6 +250,9 @@ function getChatScrollEl() {
 let chatStickToBottom = true;
 let chatScrollRaf = 0;
 let chatScrollBound = false;
+let consultOldestId = null;
+let consultHasMore = false;
+let consultLoadingMore = false;
 
 function isChatNearBottom(threshold = 16) {
   const el = getChatScrollEl();
@@ -357,7 +406,11 @@ function appendMessage(container, role, text, label, options = {}) {
     row.appendChild(avatar);
   }
 
-  container.appendChild(row);
+  if (options.prepend) {
+    container.insertBefore(row, container.firstChild);
+  } else {
+    container.appendChild(row);
+  }
 }
 
 function renderChatMessages(list) {
@@ -373,6 +426,30 @@ function renderChatMessages(list) {
     });
   });
   scrollChatToBottom();
+}
+
+function prependChatMessages(list) {
+  const box = document.querySelector('#view-body .chat-messages');
+  const scrollEl = getChatScrollEl();
+  if (!box || !list || !list.length) return;
+
+  const prevHeight = scrollEl ? scrollEl.scrollHeight : 0;
+  const prevTop = scrollEl ? scrollEl.scrollTop : 0;
+  const playerLabel = (window.AppState?.account || 'A').charAt(0).toUpperCase();
+
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const msg = list[i];
+    const role = msg.role === 'user' || msg.role === 'player' ? 'player' : 'dm';
+    const text = msg.content || msg.text || '';
+    appendMessage(box, role, text, role === 'dm' ? 'DM' : playerLabel, {
+      reasoning: msg.reasoning || '',
+      prepend: true,
+    });
+  }
+
+  if (scrollEl) {
+    scrollEl.scrollTop = prevTop + (scrollEl.scrollHeight - prevHeight);
+  }
 }
 
 function appendChatMessage(role, content) {
@@ -624,6 +701,10 @@ function bindChatInput() {
 }
 
 async function loadConsultMessages() {
+  consultOldestId = null;
+  consultHasMore = false;
+  consultLoadingMore = false;
+
   const res = await fetch('api/consult/messages');
   if (!res.ok) return;
   const data = await res.json();
@@ -633,6 +714,56 @@ async function loadConsultMessages() {
   }
   applyChatInputPlaceholder();
   renderChatMessages(data.messages || []);
+
+  const list = data.messages || [];
+  consultHasMore = !!data.has_more;
+  const withId = list.find(m => m.id != null);
+  if (withId) {
+    consultOldestId = list[0].id;
+  } else {
+    consultOldestId = null;
+    consultHasMore = false;
+  }
+  bindConsultLoadMore();
+}
+
+async function loadMoreConsultMessages() {
+  if (
+    window.activeSession?.type !== 'consult' ||
+    !consultHasMore ||
+    consultLoadingMore ||
+    consultOldestId == null
+  ) {
+    return;
+  }
+
+  consultLoadingMore = true;
+  try {
+    const res = await fetch(
+      'api/consult/messages?before_id=' + encodeURIComponent(consultOldestId)
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    const list = data.messages || [];
+    if (list.length) {
+      prependChatMessages(list);
+      consultOldestId = list[0].id;
+    }
+    consultHasMore = !!data.has_more;
+  } finally {
+    consultLoadingMore = false;
+  }
+}
+
+function bindConsultLoadMore() {
+  const el = getChatScrollEl();
+  if (!el || el.dataset.consultLoadMoreBound === '1') return;
+  el.dataset.consultLoadMoreBound = '1';
+  el.addEventListener('scroll', () => {
+    if (window.activeSession?.type !== 'consult') return;
+    if (el.scrollTop > 40) return;
+    loadMoreConsultMessages();
+  }, { passive: true });
 }
 
 async function loadGameMessages(saveId) {
@@ -697,3 +828,15 @@ async function confirmClearConsult() {
   }
 })();
 
+function syncTopBarNotesButton() {
+  const btn = document.getElementById('btn-note');
+  if (!btn) return;
+  const show = window.activeView !== 'home';
+  btn.hidden = !show;
+  if (!show && typeof closePanel === 'function') {
+    const notesPanel = document.getElementById('panel-notes');
+    if (notesPanel && !notesPanel.classList.contains('hidden')) {
+      closePanel();
+    }
+  }
+}

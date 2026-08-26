@@ -5,6 +5,9 @@ function homeMarkdownPath() {
   
   async function showHomeView() {
     window.activeView = 'home';
+    if (typeof syncTopBarNotesButton === 'function') {
+      syncTopBarNotesButton();
+    }
     window.activeSession = null;
     if (typeof clearPersistedViewSession === 'function') {
       clearPersistedViewSession();

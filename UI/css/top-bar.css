@@ -75,3 +75,7 @@
   .top-bar-btn-label {
     font-size: var(--font-top-bar);
   }
+
+  .top-bar-btn[hidden] {
+    display: none !important;
+  }

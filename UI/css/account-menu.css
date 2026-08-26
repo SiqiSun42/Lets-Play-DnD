@@ -252,33 +252,21 @@
     pointer-events: none;
   }
 
-  .account-email-wrap {
-    position: relative;
+  .account-code-row {
+    display: grid;
+    grid-template-columns: 3fr 1fr;
+    gap: 10px;
+    align-items: stretch;
   }
   
-  .account-email-wrap input {
+  .account-code-row input {
+    min-width: 0;
+  }
+  
+  .account-code-send {
     width: 100%;
-    box-sizing: border-box;
-    padding-right: 40px;
-  }
-  
-  .account-email-clear {
-    position: absolute;
-    top: 50%;
-    right: 8px;
-    transform: translateY(-50%);
-    border: none;
-    background: none;
-    padding: 4px;
-    cursor: pointer;
-    color: var(--text-secondary);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    opacity: 0.75;
-  }
-  
-  .account-email-clear:hover {
-    opacity: 1;
-    color: var(--popover-danger, #e07070);
+    white-space: nowrap;
+    padding-left: 8px;
+    padding-right: 8px;
+    font-size: 13px;
   }
