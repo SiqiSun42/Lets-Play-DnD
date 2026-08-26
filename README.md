@@ -29,6 +29,16 @@ LetsPlayDnD 是一个基于 Web 的龙与地下城（D&D 5e）辅助跑团项目
 
 当前功能以账号系统、UI 与咨询（Consult）流程为主；游戏主流程（`game_zh` / `game_en`）仍在开发中。
 
+<p align="center">
+  <img src="UI/img/LetsPlayDnD-Login-zh.jpg" alt="登录界面" width="720">
+</p>
+<p align="center"><em>登录界面</em></p>
+
+<p align="center">
+  <img src="UI/img/LetsPlayDnD-zh.jpg" alt="主界面" width="720">
+</p>
+<p align="center"><em>主界面</em></p>
+
 ## 技术栈
 
 | 层级 | 技术 |

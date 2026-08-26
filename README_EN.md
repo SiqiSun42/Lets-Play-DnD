@@ -29,6 +29,16 @@ This repository is mainly for learning and reference. For the full experience, p
 
 Current focus: accounts, UI, and the Consult flow. The main game loop (`game_zh` / `game_en`) is still under development.
 
+<p align="center">
+  <img src="UI/img/LetsPlayDnD-Login-en.jpg" alt="Login page" width="720">
+</p>
+<p align="center"><em>Login page</em></p>
+
+<p align="center">
+  <img src="UI/img/LetsPlayDnD-en.jpg" alt="Main interface" width="720">
+</p>
+<p align="center"><em>Main interface</em></p>
+
 ## Tech Stack
 
 | Layer | Technologies |
