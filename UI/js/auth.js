@@ -275,7 +275,10 @@ async function onRegModalSendCode() {
     const res = await fetch('api/register/send-code', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({
+        email,
+        language: localStorage.getItem('app-language') || 'zh-CN',
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -343,6 +346,334 @@ function bindRegEmailModalOnce() {
   modal.addEventListener('click', e => {
     if (e.target === modal) closeRegEmailModal();
   });
+}
+
+let forgotResetToken = '';
+let forgotResetUsername = '';
+
+function openForgotPasswordModal() {
+  const modal = document.getElementById('reg-email-modal');
+  const title = document.getElementById('reg-email-modal-title');
+  const body = document.getElementById('reg-email-modal-body');
+  if (!modal || !title || !body) return;
+
+  forgotResetToken = '';
+  forgotResetUsername = '';
+  stopRegEmailCodeCooldown();
+
+  title.textContent = t('verifyEmailTitle');
+  body.innerHTML = `
+    <form class="auth-modal-form" id="forgot-email-verify-form">
+      <div class="auth-modal-field">
+        <div class="auth-modal-field-head">
+          <div class="auth-modal-label-with-help">
+            <label for="forgot-modal-email">${t('newEmail')}</label>
+            <button type="button" class="auth-modal-help" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+                <path fill="currentColor" d="M12 17a1.2 1.2 0 1 1 0-2.4A1.2 1.2 0 0 1 12 17zm1-4.2h-2c0-1.7 1.6-1.9 1.6-3.1 0-.7-.5-1.2-1.3-1.2-.9 0-1.4.5-1.4 1.4H8.5C8.5 8.2 10 7 12.1 7c1.9 0 3.2 1.1 3.2 2.7 0 1.8-1.7 2.2-2.3 3.1z"/>
+              </svg>
+              <span class="auth-modal-help-tip">${t('tipVerifyEmail')}</span>
+            </button>
+          </div>
+          <span class="auth-modal-field-error" id="forgot-modal-email-error"></span>
+        </div>
+        <input id="forgot-modal-email" type="text" placeholder="${t('newEmailPlaceholder')}" autocomplete="email">
+      </div>
+      <div class="auth-modal-field">
+        <div class="auth-modal-field-head">
+          <div class="auth-modal-label-with-help">
+            <label for="forgot-modal-code">${t('verificationCode')}</label>
+          </div>
+          <span class="auth-modal-field-error" id="forgot-modal-code-error"></span>
+        </div>
+        <div class="auth-modal-code-row">
+          <input id="forgot-modal-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="${t('verificationCodePlaceholder')}" maxlength="7">
+          <button type="button" class="auth-modal-btn auth-modal-btn-primary auth-modal-send" id="btn-forgot-modal-send-code">${t('sendVerificationCode')}</button>
+        </div>
+      </div>
+      <div class="auth-modal-actions">
+        <button type="button" class="auth-modal-btn" id="btn-forgot-modal-back">${t('back')}</button>
+        <button type="submit" class="auth-modal-btn auth-modal-btn-primary" id="btn-forgot-modal-next">${t('nextStep')}</button>
+      </div>
+    </form>
+  `;
+
+  document.getElementById('btn-forgot-modal-back').addEventListener('click', closeRegEmailModal);
+  document.getElementById('btn-forgot-modal-send-code').addEventListener('click', onForgotModalSendCode);
+  document.getElementById('forgot-email-verify-form').addEventListener('submit', onForgotModalNext);
+
+  modal.classList.remove('hidden');
+}
+
+function clearForgotModalEmailError() {
+  const err = document.getElementById('forgot-modal-email-error');
+  const input = document.getElementById('forgot-modal-email');
+  if (err) err.textContent = '';
+  if (input) input.classList.remove('is-invalid');
+}
+
+function showForgotModalEmailError(message) {
+  const err = document.getElementById('forgot-modal-email-error');
+  const input = document.getElementById('forgot-modal-email');
+  if (err) err.textContent = message;
+  if (input) {
+    input.classList.add('is-invalid');
+    input.focus();
+  }
+}
+
+function clearForgotModalCodeError() {
+  const err = document.getElementById('forgot-modal-code-error');
+  const input = document.getElementById('forgot-modal-code');
+  if (err) err.textContent = '';
+  if (input) input.classList.remove('is-invalid');
+}
+
+function showForgotModalCodeError(message) {
+  const err = document.getElementById('forgot-modal-code-error');
+  const input = document.getElementById('forgot-modal-code');
+  if (err) err.textContent = message;
+  if (input) {
+    input.classList.add('is-invalid');
+    input.focus();
+  }
+}
+
+function startForgotEmailCodeCooldown(seconds) {
+  stopRegEmailCodeCooldown();
+  const sendBtn = document.getElementById('btn-forgot-modal-send-code');
+  if (!sendBtn) return;
+
+  let left = seconds;
+  sendBtn.disabled = true;
+  sendBtn.classList.remove('is-success');
+  sendBtn.textContent = `${t('resendVerificationCode')} ${left}s`;
+
+  regEmailCodeCooldownTimer = setInterval(() => {
+    left -= 1;
+    const btn = document.getElementById('btn-forgot-modal-send-code');
+    if (!btn) {
+      stopRegEmailCodeCooldown();
+      return;
+    }
+    if (left <= 0) {
+      stopRegEmailCodeCooldown();
+      btn.disabled = false;
+      btn.textContent = t('resendVerificationCode');
+      return;
+    }
+    btn.textContent = `${t('resendVerificationCode')} ${left}s`;
+  }, 1000);
+}
+
+async function onForgotModalSendCode() {
+  clearForgotModalEmailError();
+  clearForgotModalCodeError();
+  const email = document.getElementById('forgot-modal-email').value.trim();
+  if (!email) {
+    showForgotModalEmailError(t('emailMissing'));
+    return;
+  }
+  if (!EMAIL_RE.test(email) || email.endsWith('@local.invalid')) {
+    showForgotModalEmailError(t('emailInvalid'));
+    return;
+  }
+
+  const sendBtn = document.getElementById('btn-forgot-modal-send-code');
+  if (sendBtn.disabled) return;
+  sendBtn.disabled = true;
+  try {
+    const res = await fetch('api/forgot/send-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        language: localStorage.getItem('app-language') || 'zh-CN',
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (data.error === 'email_not_registered') {
+        showForgotModalEmailError(t('emailNotRegistered'));
+      } else if (data.error === 'missing_email') {
+        showForgotModalEmailError(t('emailMissing'));
+      } else if (data.error === 'too_fast') {
+        const wait = Math.max(1, Number(data.retry_after) || 60);
+        startForgotEmailCodeCooldown(wait);
+        return;
+      } else {
+        showForgotModalEmailError(t('emailInvalid'));
+      }
+      sendBtn.disabled = false;
+      return;
+    }
+    startForgotEmailCodeCooldown(60);
+  } catch {
+    showForgotModalEmailError(t('emailInvalid'));
+    sendBtn.disabled = false;
+  }
+}
+
+async function onForgotModalNext(e) {
+  e.preventDefault();
+  clearForgotModalEmailError();
+  clearForgotModalCodeError();
+
+  const email = document.getElementById('forgot-modal-email').value.trim();
+  const code = normalizeRegEmailCode(document.getElementById('forgot-modal-code').value);
+
+  if (!code) {
+    showForgotModalCodeError(t('codeMissing'));
+    return;
+  }
+
+  try {
+    const res = await fetch('api/forgot/verify-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showForgotModalCodeError(t('codeMismatch'));
+      return;
+    }
+    forgotResetToken = data.reset_token || '';
+    forgotResetUsername = data.username || '';
+    openForgotResetPasswordModal();
+  } catch {
+    showForgotModalCodeError(t('codeMismatch'));
+  }
+}
+
+function clearForgotPwdErrors() {
+  ['forgot-pwd-new', 'forgot-pwd-confirm'].forEach(id => {
+    const err = document.getElementById(`${id}-error`);
+    const input = document.getElementById(id);
+    if (err) err.textContent = '';
+    if (input) input.classList.remove('is-invalid');
+  });
+}
+
+function showForgotPwdError(inputId, errorId, message) {
+  const err = document.getElementById(errorId);
+  const input = document.getElementById(inputId);
+  if (err) err.textContent = message;
+  if (input) {
+    input.classList.add('is-invalid');
+    input.focus();
+  }
+}
+
+function openForgotResetPasswordModal() {
+  const modal = document.getElementById('reg-email-modal');
+  const title = document.getElementById('reg-email-modal-title');
+  const body = document.getElementById('reg-email-modal-body');
+  if (!modal || !title || !body) return;
+
+  stopRegEmailCodeCooldown();
+  title.textContent = t('editPasswordTitle');
+  body.innerHTML = `
+    <form class="auth-modal-form" id="forgot-reset-password-form">
+      <div class="auth-modal-field">
+        <div class="auth-modal-username-row">
+          <span>${t('username')}:</span>
+          <span class="auth-modal-username-value" id="forgot-pwd-username">${forgotResetUsername}</span>
+        </div>
+      </div>
+      <div class="auth-modal-field">
+        <div class="auth-modal-field-head">
+          <div class="auth-modal-label-with-help">
+            <label for="forgot-pwd-new">${t('newPassword')}</label>
+            <button type="button" class="auth-modal-help" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+                <path fill="currentColor" d="M12 17a1.2 1.2 0 1 1 0-2.4A1.2 1.2 0 0 1 12 17zm1-4.2h-2c0-1.7 1.6-1.9 1.6-3.1 0-.7-.5-1.2-1.3-1.2-.9 0-1.4.5-1.4 1.4H8.5C8.5 8.2 10 7 12.1 7c1.9 0 3.2 1.1 3.2 2.7 0 1.8-1.7 2.2-2.3 3.1z"/>
+              </svg>
+              <span class="auth-modal-help-tip">${t('tipPassword')}</span>
+            </button>
+          </div>
+          <span class="auth-modal-field-error" id="forgot-pwd-new-error"></span>
+        </div>
+        <div class="auth-modal-password-wrap">
+          <input id="forgot-pwd-new" type="password" placeholder="${t('newPasswordPlaceholder')}" autocomplete="new-password">
+          <button type="button" class="auth-eye" data-eye-for="forgot-pwd-new" aria-label="show password">${eyeClosedSvg()}</button>
+        </div>
+      </div>
+      <div class="auth-modal-field">
+        <div class="auth-modal-field-head">
+          <label for="forgot-pwd-confirm">${t('confirmNewPassword')}</label>
+          <span class="auth-modal-field-error" id="forgot-pwd-confirm-error"></span>
+        </div>
+        <div class="auth-modal-password-wrap">
+          <input id="forgot-pwd-confirm" type="password" placeholder="${t('confirmNewPasswordPlaceholder')}" autocomplete="new-password">
+          <button type="button" class="auth-eye" data-eye-for="forgot-pwd-confirm" aria-label="show password">${eyeClosedSvg()}</button>
+        </div>
+      </div>
+      <div class="auth-modal-actions">
+        <button type="button" class="auth-modal-btn" id="btn-forgot-pwd-back">${t('back')}</button>
+        <button type="submit" class="auth-modal-btn auth-modal-btn-primary" id="btn-forgot-pwd-save">${t('savePassword')}</button>
+      </div>
+    </form>
+  `;
+
+  bindPasswordEyes(document.getElementById('reg-email-modal-body'));
+  document.getElementById('btn-forgot-pwd-back').addEventListener('click', openForgotPasswordModal);
+  document.getElementById('forgot-reset-password-form').addEventListener('submit', onForgotResetPasswordSave);
+  modal.classList.remove('hidden');
+}
+
+async function onForgotResetPasswordSave(e) {
+  e.preventDefault();
+  clearForgotPwdErrors();
+
+  const newPassword = document.getElementById('forgot-pwd-new').value;
+  const confirm = document.getElementById('forgot-pwd-confirm').value;
+
+  if (!newPassword) {
+    showForgotPwdError('forgot-pwd-new', 'forgot-pwd-new-error', t('pwdMissingNew'));
+    return;
+  }
+  if (!PASSWORD_RE.test(newPassword)) {
+    showForgotPwdError('forgot-pwd-new', 'forgot-pwd-new-error', t('pwdInvalidNew'));
+    return;
+  }
+  if (!confirm) {
+    showForgotPwdError('forgot-pwd-confirm', 'forgot-pwd-confirm-error', t('pwdMissingConfirm'));
+    return;
+  }
+  if (newPassword !== confirm) {
+    showForgotPwdError('forgot-pwd-confirm', 'forgot-pwd-confirm-error', t('pwdConfirmMismatch'));
+    return;
+  }
+
+  const saveBtn = document.getElementById('btn-forgot-pwd-save');
+  try {
+    const res = await fetch('api/forgot/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reset_token: forgotResetToken,
+        new_password: newPassword,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showForgotPwdError('forgot-pwd-new', 'forgot-pwd-new-error', t('pwdInvalidNew'));
+      return;
+    }
+    saveBtn.disabled = true;
+    saveBtn.classList.add('is-success');
+    saveBtn.textContent = t('resetPasswordSuccess');
+    setTimeout(() => {
+      forgotResetToken = '';
+      forgotResetUsername = '';
+      closeRegEmailModal();
+    }, 500);
+  } catch {
+    showForgotPwdError('forgot-pwd-new', 'forgot-pwd-new-error', t('pwdInvalidNew'));
+  }
 }
 
 function clearRegisterFieldErrors() {
@@ -458,8 +789,10 @@ function eyeOpenSvg() {
   `;
 }
 
-function bindPasswordEyes() {
-  document.querySelectorAll('.auth-eye').forEach(btn => {
+function bindPasswordEyes(root = document) {
+  root.querySelectorAll('.auth-eye').forEach(btn => {
+    if (btn.dataset.eyeBound === '1') return;
+    btn.dataset.eyeBound = '1';
     const input = document.getElementById(btn.dataset.eyeFor);
     if (!input) return;
 
@@ -529,6 +862,7 @@ function renderLoginForm() {
     authMode = 'register';
     renderAuth();
   });
+  document.getElementById('btn-forgot-password').addEventListener('click', openForgotPasswordModal);
 }
 
 function renderRegisterForm() {

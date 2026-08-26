@@ -7,6 +7,7 @@ import os
 import base64
 import secrets
 import re
+import resend
 from dotenv import load_dotenv
 from cryptography.fernet import Fernet, InvalidToken
 from datetime import datetime, timezone, timedelta
@@ -214,12 +215,36 @@ _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _email_verify_codes = {}
 _reg_email_codes = {}
 _reg_email_verified = {}
+_forgot_email_codes = {}
+_forgot_reset_tokens = {}
 
 def _normalize_email_code(raw):
     return re.sub(r"\D", "", str(raw or ""))
 
-def _send_verification_email(to_email, code):
-    print(f"[email-verify] to={to_email} code={code}", flush=True)
+def _send_verification_email(to_email, code, language="zh-CN"):
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        print(f"[email-verify] to={to_email} code={code} lang={language}", flush=True)
+        return
+    resend.api_key = api_key
+    if language == "en":
+        subject = "Your verification code"
+        html = (
+            f"<p>Your verification code is: <strong>{code}</strong></p>"
+            f"<p>Please complete verification within 10 minutes.</p>"
+        )
+    else:
+        subject = "你的验证码"
+        html = (
+            f"<p>你的验证码是：<strong>{code}</strong></p>"
+            f"<p>请在 10 分钟内完成验证。</p>"
+        )
+    resend.Emails.send({
+        "from": "letsplaydnd@rosemarysun.com",
+        "to": to_email,
+        "subject": subject,
+        "html": html,
+    })
 
 @app.post("/api/email/send-code")
 def send_email_code():
@@ -257,7 +282,10 @@ def send_email_code():
         "expires_at": now + timedelta(minutes=10),
         "sent_at": now,
     }
-    _send_verification_email(email, code)
+    language = (body.get("language") or "zh-CN").strip()
+    if language not in ("zh-CN", "en"):
+        language = "zh-CN"
+    _send_verification_email(email, code, language)
     return jsonify({"ok": True})
 
 @app.post("/api/change-email")
@@ -339,7 +367,10 @@ def register_send_code():
         "expires_at": now + timedelta(minutes=10),
         "sent_at": now,
     }
-    _send_verification_email(email, code)
+    language = (body.get("language") or "zh-CN").strip()
+    if language not in ("zh-CN", "en"):
+        language = "zh-CN"
+    _send_verification_email(email, code, language)
     return jsonify({"ok": True})
 
 @app.post("/api/register/verify-email")
@@ -358,6 +389,93 @@ def register_verify_email():
     _reg_email_codes.pop(email, None)
     _reg_email_verified[email] = now + timedelta(minutes=30)
     return jsonify({"ok": True, "email": email})
+
+@app.post("/api/forgot/send-code")
+def forgot_send_code():
+    body = request.get_json() or {}
+    email = (body.get("email") or "").strip()
+    if not email:
+        return jsonify({"error": "missing_email"}), 400
+    if not _EMAIL_RE.match(email) or email.endswith("@local.invalid"):
+        return jsonify({"error": "invalid_email"}), 400
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, username FROM users WHERE email = ?", (email,)
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return jsonify({"error": "email_not_registered"}), 404
+
+    now = datetime.now(timezone.utc)
+    prev = _forgot_email_codes.get(email)
+    if prev and (now - prev["sent_at"]).total_seconds() < 60:
+        left = int(60 - (now - prev["sent_at"]).total_seconds())
+        if left < 1:
+            left = 1
+        return jsonify({"error": "too_fast", "retry_after": left}), 429
+
+    code = f"{secrets.randbelow(1000000):06d}"
+    _forgot_email_codes[email] = {
+        "code": code,
+        "username": row["username"],
+        "expires_at": now + timedelta(minutes=10),
+        "sent_at": now,
+    }
+    language = (body.get("language") or "zh-CN").strip()
+    if language not in ("zh-CN", "en"):
+        language = "zh-CN"
+    _send_verification_email(email, code, language)
+    return jsonify({"ok": True})
+
+@app.post("/api/forgot/verify-email")
+def forgot_verify_email():
+    body = request.get_json() or {}
+    email = (body.get("email") or "").strip()
+    code = _normalize_email_code(body.get("code"))
+    pending = _forgot_email_codes.get(email)
+    now = datetime.now(timezone.utc)
+    if (
+        not pending
+        or pending["code"] != code
+        or now > pending["expires_at"]
+    ):
+        return jsonify({"error": "code_mismatch"}), 400
+    token = secrets.token_urlsafe(24)
+    _forgot_email_codes.pop(email, None)
+    _forgot_reset_tokens[token] = {
+        "username": pending["username"],
+        "email": email,
+        "expires_at": now + timedelta(minutes=15),
+    }
+    return jsonify({
+        "ok": True,
+        "username": pending["username"],
+        "reset_token": token,
+    })
+
+@app.post("/api/forgot/reset-password")
+def forgot_reset_password():
+    body = request.get_json() or {}
+    token = (body.get("reset_token") or "").strip()
+    new_password = body.get("new_password") or ""
+    if not token or not new_password:
+        return jsonify({"error": "missing fields"}), 400
+
+    pending = _forgot_reset_tokens.get(token)
+    now = datetime.now(timezone.utc)
+    if not pending or now > pending["expires_at"]:
+        return jsonify({"error": "invalid_token"}), 400
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE username = ?",
+        (generate_password_hash(new_password), pending["username"]),
+    )
+    conn.commit()
+    conn.close()
+    _forgot_reset_tokens.pop(token, None)
+    return jsonify({"ok": True})
 
 @app.post("/api/register")
 def register():

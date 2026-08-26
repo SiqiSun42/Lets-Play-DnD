@@ -619,3 +619,25 @@ body.is-leaving {
   padding-right: 8px;
   font-size: 13px;
 }
+
+.auth-modal-password-wrap {
+  position: relative;
+}
+
+.auth-modal-password-wrap input {
+  padding-right: 40px;
+}
+
+.auth-modal-username-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 42px;
+  font-size: 15px;
+  color: rgba(245, 240, 230, 0.75);
+}
+
+.auth-modal-username-value {
+  color: #f5f0e6;
+  font-weight: 600;
+}

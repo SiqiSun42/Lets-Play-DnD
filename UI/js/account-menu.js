@@ -436,7 +436,13 @@ async function onSendEmailCode() {
     const res = await fetch('api/email/send-code', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({
+        email,
+        language:
+          window.AppState?.settings?.language ||
+          localStorage.getItem('app-language') ||
+          'zh-CN',
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
