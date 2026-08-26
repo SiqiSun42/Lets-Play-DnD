@@ -1,5 +1,10 @@
 <h1 align="center">Let's Play DnD</h1>
 
+<p align="center">
+  <a href="README.md">中文</a> ·
+  <a href="README_EN.md">English</a>
+</p>
+
 <div align="center">
 
   ![Status](https://img.shields.io/badge/status-online-brightgreen)
@@ -7,6 +12,8 @@
   ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
   ![Flask](https://img.shields.io/badge/flask-framework-black?logo=flask)
   ![Bilingual](https://img.shields.io/badge/lang-中英双语-orange)
+  [![中文](https://img.shields.io/badge/lang-中文-red)](README.md)
+  [![English](https://img.shields.io/badge/lang-English-blue)](README_EN.md)
   ![License](https://img.shields.io/badge/license-MIT-green)
   
 </div>
