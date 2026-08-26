@@ -1,6 +1,13 @@
 <h1 align="center">Let's Play DnD</h1>
 
 <p align="center">
+  ![Status](https://img.shields.io/badge/status-online-brightgreen)
+  ![WIP](https://img.shields.io/badge/WIP-yes-yellow)
+  ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+  ![Flask](https://img.shields.io/badge/flask-framework-black?logo=flask)
+</p>
+
+<p align="center">
   <strong>在线体验：</strong>
   <a href="https://rosemarysun.com/letsplaydnd/">https://rosemarysun.com/letsplaydnd/</a>
 </p>
