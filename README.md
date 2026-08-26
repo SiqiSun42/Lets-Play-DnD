@@ -1,6 +1,9 @@
-# LetsPlayDnD
+<h1 align="center">Let's Play DnD</h1>
 
-**在线体验：** https://rosemarysun.com/letsplaydnd/
+<p align="center">
+  <strong>在线体验：</strong>
+  <a href="https://rosemarysun.com/letsplaydnd/">https://rosemarysun.com/letsplaydnd/</a>
+</p>
 
 ## 描述
 

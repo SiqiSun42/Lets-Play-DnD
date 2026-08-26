@@ -77,6 +77,14 @@ function bindLoginForm() {
           patch: { language },
         }),
       });
+      await fetch('api/meta/patch-by-id', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: 'consult',
+          patch: { in_game_language: language },
+        }),
+      });
       const submitBtn = form.querySelector('.auth-submit');
       submitBtn.disabled = true;
       submitBtn.classList.add('is-success');
