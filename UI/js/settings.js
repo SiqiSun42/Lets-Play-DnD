@@ -140,6 +140,9 @@ const THEMES = [
     }
 
     applyI18n();
+    if (typeof syncPanelSidebarTitle === 'function') {
+      syncPanelSidebarTitle();
+    }
     initSettingsPanel();
     localStorage.setItem('app-language', language);
   }

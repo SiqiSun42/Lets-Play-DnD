@@ -1,12 +1,27 @@
 const panelOverlay = document.getElementById('panel-overlay');
 const panelBox = document.getElementById('panel-box');
 const btnPanelClose = document.getElementById('btn-panel-close');
-const panelSearch = document.getElementById('panel-sidebar-search');
 
 const panelContents = {
   settings: document.getElementById('panel-settings'),
   notes: document.getElementById('panel-notes'),
 };
+
+const panelSidebarTitle = document.getElementById('panel-sidebar-title');
+
+const PANEL_SIDEBAR_META = {
+  settings: 'panelSettings',
+  notes: 'panelNotes',
+};
+
+function syncPanelSidebarTitle(name) {
+  const panelName = name ?? activePanel;
+  const labelKey = PANEL_SIDEBAR_META[panelName];
+  if (!panelSidebarTitle || !labelKey) return;
+  panelSidebarTitle.textContent = t(labelKey);
+}
+
+window.syncPanelSidebarTitle = syncPanelSidebarTitle;
 
 let activePanel = null;
 
@@ -24,12 +39,9 @@ function openPanel(name) {
   });
 
   activePanel = name;
+  syncPanelSidebarTitle(name);
   panelOverlay.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
-
-  panelSearch.value = '';
-  panelSearch.placeholder =
-    name === 'settings' ? t('searchSettings') : t('searchNotes');
 }
 
 function closePanel() {
