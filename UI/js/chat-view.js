@@ -417,7 +417,9 @@ function renderChatMessages(list) {
   const box = document.querySelector('#view-body .chat-messages');
   if (!box) return;
   box.innerHTML = '';
-  const playerLabel = (window.AppState?.account || 'A').charAt(0).toUpperCase();
+  const playerLabel = typeof getAccountAvatarLetter === 'function'
+    ? getAccountAvatarLetter()
+    : 'A';
   (list || []).forEach(msg => {
     const role = msg.role === 'user' || msg.role === 'player' ? 'player' : 'dm';
     const text = msg.content || msg.text || '';
@@ -435,7 +437,9 @@ function prependChatMessages(list) {
 
   const prevHeight = scrollEl ? scrollEl.scrollHeight : 0;
   const prevTop = scrollEl ? scrollEl.scrollTop : 0;
-  const playerLabel = (window.AppState?.account || 'A').charAt(0).toUpperCase();
+  const playerLabel = typeof getAccountAvatarLetter === 'function'
+    ? getAccountAvatarLetter()
+    : 'A';
 
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const msg = list[i];
@@ -458,7 +462,7 @@ function appendChatMessage(role, content) {
   const uiRole = role === 'user' || role === 'player' ? 'player' : 'dm';
   const label = uiRole === 'dm'
     ? 'DM'
-    : (window.AppState?.account || 'A').charAt(0).toUpperCase();
+    : (typeof getAccountAvatarLetter === 'function' ? getAccountAvatarLetter() : 'A');
   appendMessage(box, uiRole, content, label);
   scrollChatToBottom();
 }

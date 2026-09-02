@@ -8,6 +8,12 @@ function getCurrentAccount() {
   return currentAccount;
 }
 
+function getAccountAvatarLetter() {
+  const account = getCurrentAccount() || window.AppState?.account || '';
+  if (!account) return 'A';
+  return account.charAt(0);
+}
+
 function getAccountSettingsPath(account) {
   return `Account/${account}/settings.json`;
 }
@@ -71,5 +77,5 @@ function applyAccountSettings(settings) {
     const label = document.getElementById('account-label');
     const avatar = document.getElementById('avatar');
     if (label) label.textContent = getCurrentAccount();
-    if (avatar) avatar.textContent = getCurrentAccount().charAt(0);
+    if (avatar) avatar.textContent = getAccountAvatarLetter();
   }

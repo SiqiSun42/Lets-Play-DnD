@@ -30,6 +30,8 @@ function openPanel(name) {
 
   if (name === 'settings') {
     initSettingsPanel();
+    const backBtn = document.getElementById('btn-panel-back');
+    if (backBtn) backBtn.classList.add('hidden');
   } else if (name === 'notes') {
     initNotesPanel();
   }
@@ -48,6 +50,8 @@ function closePanel() {
   panelOverlay.classList.add('hidden');
   activePanel = null;
   document.body.style.overflow = '';
+  const backBtn = document.getElementById('btn-panel-back');
+  if (backBtn) backBtn.classList.add('hidden');
 }
 
 btnPanelClose.addEventListener('click', closePanel);

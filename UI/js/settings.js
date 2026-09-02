@@ -144,6 +144,12 @@ const THEMES = [
       syncPanelSidebarTitle();
     }
     initSettingsPanel();
+    if (typeof initNotesPanel === 'function') {
+      const notesPanel = document.getElementById('panel-notes');
+      if (notesPanel && !notesPanel.classList.contains('hidden')) {
+        initNotesPanel();
+      }
+    }
     localStorage.setItem('app-language', language);
   }
   

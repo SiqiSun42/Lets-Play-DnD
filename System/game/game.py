@@ -42,6 +42,80 @@ def _rows_for_model(conn: sqlite3.Connection) -> list:
     ).fetchall()
     return [{"role": role, "content": content} for role, content in rows]
 
+def _rows_for_history(
+    conn: sqlite3.Connection,
+    *,
+    before_id: int = None,
+    limit: int = 20,
+    query: str = None,
+) -> tuple:
+    pattern = f"%{query}%" if query else None
+    if before_id is not None:
+        if pattern:
+            rows = conn.execute(
+                "SELECT id, role, content FROM messages "
+                "WHERE id < ? AND content LIKE ? ORDER BY id DESC LIMIT ?",
+                (before_id, pattern, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, role, content FROM messages "
+                "WHERE id < ? ORDER BY id DESC LIMIT ?",
+                (before_id, limit),
+            ).fetchall()
+    else:
+        if pattern:
+            rows = conn.execute(
+                "SELECT id, role, content FROM messages "
+                "WHERE content LIKE ? ORDER BY id DESC LIMIT ?",
+                (pattern, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, role, content FROM messages ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
+    result = [{"id": msg_id, "role": role, "content": content} for msg_id, role, content in rows]
+    has_more = False
+    if result:
+        oldest_id = result[-1]["id"]
+        if pattern:
+            older = conn.execute(
+                "SELECT 1 FROM messages WHERE id < ? AND content LIKE ? LIMIT 1",
+                (oldest_id, pattern),
+            ).fetchone()
+        else:
+            older = conn.execute(
+                "SELECT 1 FROM messages WHERE id < ? LIMIT 1",
+                (oldest_id,),
+            ).fetchone()
+        has_more = older is not None
+    return result, has_more
+
+def load_history_for_ui(
+    username: str,
+    save_id: str,
+    *,
+    before_id: int = None,
+    limit: int = 20,
+    query: str = None,
+) -> dict:
+    path = game_db_path(username, save_id)
+    if not path.is_file():
+        return {"messages": [], "has_more": False}
+    conn = _connect(path)
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        if n == 0:
+            return {"messages": [], "has_more": False}
+        messages, has_more = _rows_for_history(
+            conn, before_id=before_id, limit=limit, query=query
+        )
+        return {"messages": messages, "has_more": has_more}
+    finally:
+        conn.close()
+
 def load_for_ui(username: str, save_id: str) -> list:
     path = game_db_path(username, save_id)
     if not path.is_file():

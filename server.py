@@ -771,6 +771,38 @@ def consult_messages():
         "language": language,
     })
 
+@app.get("/api/consult/history")
+def consult_history():
+    username = session.get("username")
+    if not username:
+        return jsonify({"error": "not logged in"}), 401
+
+    before_raw = (request.args.get("before_id") or "").strip()
+    before_id = None
+    if before_raw:
+        try:
+            before_id = int(before_raw)
+        except ValueError:
+            return jsonify({"error": "invalid before_id"}), 400
+
+    limit_raw = (request.args.get("limit") or "").strip()
+    limit = 20
+    if limit_raw:
+        try:
+            limit = min(max(int(limit_raw), 1), 50)
+        except ValueError:
+            return jsonify({"error": "invalid limit"}), 400
+
+    query = (request.args.get("q") or "").strip() or None
+
+    from System import load_history_for_ui
+
+    data = load_history_for_ui(username, before_id=before_id, limit=limit, query=query)
+    return jsonify({
+        "messages": data["messages"],
+        "has_more": data["has_more"],
+    })
+
 @app.post("/api/consult/clear")
 def consult_clear():
     username = session.get("username")
@@ -781,6 +813,46 @@ def consult_clear():
 
     clear_chat(username)
     return jsonify({"ok": True})
+
+def _save_dir(username: str, save_id: str):
+    if not save_id or save_id == "consult":
+        return None
+    path = ROOT / "Account" / username / "Saves" / save_id
+    if not path.is_dir():
+        return None
+    return path
+
+def _safe_under(base: Path, target: Path):
+    try:
+        target.resolve().relative_to(base.resolve())
+    except ValueError:
+        return False
+    return True
+
+@app.get("/api/save/notes/list")
+def save_notes_list():
+    username = session.get("username")
+    if not username:
+        return jsonify({"error": "not logged in"}), 401
+
+    save_id = (request.args.get("save_id") or "").strip()
+    subdir = (request.args.get("subdir") or "").strip().replace("\\", "/")
+    save_path = _save_dir(username, save_id)
+    if save_path is None:
+        return jsonify({"error": "invalid save"}), 400
+    if not subdir or ".." in subdir.split("/"):
+        return jsonify({"error": "invalid dir"}), 400
+
+    dir_path = save_path / "data" / subdir
+    data_root = save_path / "data"
+    if not dir_path.is_dir() or not _safe_under(data_root, dir_path):
+        return jsonify({"files": []})
+
+    files = sorted(
+        ({"id": p.stem, "name": p.stem} for p in dir_path.glob("*.md") if p.is_file()),
+        key=lambda item: item["name"],
+    )
+    return jsonify({"files": files})
 
 @app.get("/api/game/messages")
 def game_messages():
@@ -796,6 +868,44 @@ def game_messages():
 
     messages = load_game_for_ui(username, save_id)
     return jsonify({"messages": messages})
+
+@app.get("/api/game/history")
+def game_history():
+    username = session.get("username")
+    if not username:
+        return jsonify({"error": "not logged in"}), 401
+
+    save_id = (request.args.get("id") or "").strip()
+    if not save_id or save_id == "consult":
+        return jsonify({"error": "invalid id"}), 400
+
+    before_raw = (request.args.get("before_id") or "").strip()
+    before_id = None
+    if before_raw:
+        try:
+            before_id = int(before_raw)
+        except ValueError:
+            return jsonify({"error": "invalid before_id"}), 400
+
+    limit_raw = (request.args.get("limit") or "").strip()
+    limit = 20
+    if limit_raw:
+        try:
+            limit = min(max(int(limit_raw), 1), 50)
+        except ValueError:
+            return jsonify({"error": "invalid limit"}), 400
+
+    query = (request.args.get("q") or "").strip() or None
+
+    from System import load_game_history_for_ui
+
+    data = load_game_history_for_ui(
+        username, save_id, before_id=before_id, limit=limit, query=query
+    )
+    return jsonify({
+        "messages": data["messages"],
+        "has_more": data["has_more"],
+    })
 
 @app.get("/Account/<path:filename>")
 def account_files(filename):
