@@ -2,6 +2,7 @@
 account.db
 Account/*
 !Account/.gitkeep
+CLI.md
 
 venv/
 __pycache__/

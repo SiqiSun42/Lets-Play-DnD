@@ -15,17 +15,24 @@ def configure_client(*, api_key: str, provider: str):
     root = Path(__file__).resolve().parent.parent
     load_dotenv(root / ".env")
 
-    if provider == "deepseek":
-        base_url = os.getenv("DEEPSEEK_URL")
-        model_name = os.getenv("DEEPSEEK_MODEL")
-        if not base_url or not model_name:
-            raise ValueError("DEEPSEEK_URL or DEEPSEEK_MODEL missing in .env")
-        _client = OpenAI(api_key=api_key, base_url=base_url)
-        MODEL = model_name
-        THINKING_ENABLED = os.getenv("DEEPSEEK_THINKING_ENABLED", "true").lower() == "true"
-        REASONING_EFFORT = os.getenv("DEEPSEEK_REASONING_EFFORT", "medium").strip().strip('"')
-    else:
+    env_prefix = {
+        "deepseek": "DEEPSEEK",
+        "qwen": "QWEN",
+        "openai": "OPENAI",
+        "groq": "GROQ",
+        "kimi": "KIMI",
+    }.get(provider)
+    if not env_prefix:
         raise ValueError(f"unsupported provider: {provider}")
+
+    base_url = os.getenv(f"{env_prefix}_URL")
+    model_name = os.getenv(f"{env_prefix}_MODEL")
+    if not base_url or not model_name:
+        raise ValueError(f"{env_prefix}_URL or {env_prefix}_MODEL missing in .env")
+    _client = OpenAI(api_key=api_key, base_url=base_url)
+    MODEL = model_name
+    THINKING_ENABLED = os.getenv(f"{env_prefix}_THINKING_ENABLED", "true").lower() == "true"
+    REASONING_EFFORT = os.getenv(f"{env_prefix}_REASONING_EFFORT", "medium").strip().strip('"')
 
 def clear_client():
     global _client, MODEL, THINKING_ENABLED, REASONING_EFFORT

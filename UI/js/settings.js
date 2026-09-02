@@ -1,5 +1,9 @@
 const MODELS = [
   { id: 'deepseek', labelKey: 'modelDeepseek' },
+  { id: 'qwen', labelKey: 'modelQwen' },
+  { id: 'openai', labelKey: 'modelOpenai' },
+  { id: 'groq', labelKey: 'modelGroq' },
+  { id: 'kimi', labelKey: 'modelKimi' },
 ];
 
 const THEMES = [
