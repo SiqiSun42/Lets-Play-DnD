@@ -15,6 +15,10 @@
   --font-sidebar-secondary: 16px;
 }
 
+body.auth-pending .app {
+  visibility: hidden;
+}
+
 html, body {
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;

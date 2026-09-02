@@ -1,5 +1,6 @@
 initAccount()
   .then(async ({ account, settings, user }) => {
+    document.body.classList.remove('auth-pending');
     window.AppState = { account, settings, user };
     applyAccountSettings(settings);
     applyI18n();
@@ -20,7 +21,7 @@ initAccount()
     showHomeView();
   })
   .catch(() => {
-    window.location.href = 'login.html';
+    window.location.replace('login.html');
   });
 
 const sidebar = document.getElementById('sidebar');
