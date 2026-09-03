@@ -1,3 +1,4 @@
+import copy
 import os
 import sys
 from pathlib import Path
@@ -9,11 +10,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 import System.api_client as api_client
-from System.game.game_zh import classify
+from System.game.game_zh import classify, prepare
 
-TEST_FUNC = "classify"
-HISTORY_KEY = "history_1"
-USER_TEXT = "我攻击前面的哥布林"
+TEST_FUNC = "prepare"  # "classify", "prepare"
+HISTORY_KEY = "history_3"
+USER_TEXT = "是的，进行一次察觉检定。"
+PREVIOUS_TEXT_KEY = "previous_2"
 
 HISTORIES = {
     "history_1": [],
@@ -34,7 +36,7 @@ HISTORIES = {
         },
         {
             "role": "assistant",
-            "content": "可以，进行一次察觉检定。",
+            "content": "是否要进行一次察觉检定？",
         },
     ],
     "history_4": [
@@ -59,6 +61,40 @@ HISTORIES = {
         {
             "role": "assistant",
             "content": "你当前穿的是皮甲，敏捷调整值会加入护甲等级。",
+        },
+    ],
+}
+
+PREVIOUS_TEXTS = {
+    "previous_0": [],
+    "previous_1": [
+        {"role": "system", "content": "本回合对话的类别是：元对话"},
+    ],
+    "previous_2": [
+        {"role": "system", "content": "本回合对话的类别是：属性检定"},
+    ],
+    "previous_3": [
+        {"role": "system", "content": "本回合对话的类别是：游戏动作"},
+    ],
+    "previous_4": [
+        {"role": "system", "content": "本回合对话的类别是：元对话"},
+        {
+            "role": "system",
+            "content": (
+                "以下是从规则书中检索到的相关内容：\n\n"
+                "[护甲等级]\n"
+                "（此处为模拟 RAG 摘录，用于测试 prepare 已有规则上下文时的行为。）"
+            ),
+        },
+    ],
+    "previous_5": [
+        {"role": "system", "content": "本回合对话的类别是：属性检定"},
+        {
+            "role": "system",
+            "content": (
+                "这是系统提供的本回合骰子值：\n"
+                "骰子使用者：玩家，类型：感知（察觉）检定，数量和面数：1d20，结果：[14]"
+            ),
         },
     ],
 }
@@ -93,10 +129,30 @@ def _setup_test_client():
     api_client.REASONING_EFFORT = effort.strip().strip('"')
 
 
-def run_classify():
+def _get_history():
     if HISTORY_KEY not in HISTORIES:
         raise KeyError(f"unknown history: {HISTORY_KEY}")
-    history = HISTORIES[HISTORY_KEY]
+    return HISTORIES[HISTORY_KEY]
+
+
+def _get_previous_text():
+    if PREVIOUS_TEXT_KEY not in PREVIOUS_TEXTS:
+        raise KeyError(f"unknown previous_text: {PREVIOUS_TEXT_KEY}")
+    return copy.deepcopy(PREVIOUS_TEXTS[PREVIOUS_TEXT_KEY])
+
+
+def _print_previous_text(label: str, items: list):
+    print(label)
+    if not items:
+        print("  (empty)")
+        return
+    for i, item in enumerate(items):
+        print(f"  [{i}] role={item['role']}")
+        print(f"      {item['content']}")
+
+
+def run_classify():
+    history = _get_history()
     result = classify(history, USER_TEXT)
     print(f"func: {TEST_FUNC}")
     print(f"history: {HISTORY_KEY}")
@@ -105,8 +161,26 @@ def run_classify():
     print(f"result: {result!r}")
 
 
+def run_prepare():
+    history = _get_history()
+    previous_text = _get_previous_text()
+    before_len = len(previous_text)
+
+    result = prepare(history, USER_TEXT, previous_text)
+
+    print(f"func: {TEST_FUNC}")
+    print(f"history: {HISTORY_KEY}")
+    print(f"previous_text: {PREVIOUS_TEXT_KEY}")
+    print(f"input: {USER_TEXT!r}")
+    print(f"model: {api_client.MODEL}")
+    print(f"added: {len(result) - before_len} item(s)")
+    print()
+    _print_previous_text("previous_text (after prepare):", result)
+
+
 RUNNERS = {
     "classify": run_classify,
+    "prepare": run_prepare,
 }
 
 

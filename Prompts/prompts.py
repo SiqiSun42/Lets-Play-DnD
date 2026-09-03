@@ -12,6 +12,7 @@ def _read_prompt(filename: str) -> str:
 DECISION_ZH_PROMPT = _read_prompt('consult/decision-zh.md')
 OUTPUT_ZH_PROMPT = _read_prompt('consult/output-zh.md')
 CLASSIFY_ZH_PROMPT = _read_prompt('game_zh/1.classify.md')
+PREPARE_ZH_PROMPT = _read_prompt('game_zh/2.prepare.md')
 
 # 英文提示词
 DECISION_EN_PROMPT = _read_prompt('consult/decision-en.md')
