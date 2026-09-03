@@ -149,7 +149,7 @@ def append_message(
     finally:
         conn.close()
 
-def _history_for_model(username: str, save_id: str) -> list:
+def history_for_model(username: str, save_id: str) -> list:
     path = game_db_path(username, save_id)
     if not path.is_file():
         return []

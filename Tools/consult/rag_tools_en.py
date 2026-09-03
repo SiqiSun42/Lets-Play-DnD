@@ -1,6 +1,6 @@
 """
-DnD 规则检索工具英文版
-提供search_rules函数的接口描述, 供function_calling使用
+The DnD rule search tool
+Provides an interface description for the "search_rules" function, for use with function_callin.
 """
 rag_tools = [
     {

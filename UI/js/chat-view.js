@@ -111,10 +111,15 @@ function syncChatSaveButton() {
   saveBtn.hidden = window.activeSession?.type === 'consult';
 }
 
+function chatInputHasText() {
+  const input = document.querySelector('#view-body .chat-input');
+  return !!(input && input.value.trim());
+}
+
 function syncChatSendEnabled() {
   const allowSend = window.activeSession?.type === 'consult';
   const sendBtn = document.getElementById('btn-chat-send');
-  if (sendBtn) sendBtn.disabled = !allowSend || chatSendBusy;
+  if (sendBtn) sendBtn.disabled = !allowSend || chatSendBusy || !chatInputHasText();
   const input = document.querySelector('#view-body .chat-input');
   if (input) input.readOnly = !allowSend;
 }
@@ -677,9 +682,15 @@ function bindChatInput() {
   if (!input || input.dataset.bound === '1') return;
   input.dataset.bound = '1';
 
+  input.addEventListener('input', () => {
+    syncChatSendEnabled();
+  });
+
   input.addEventListener('keydown', e => {
     if (e.key !== 'Enter' || e.shiftKey) return;
     e.preventDefault();
+    const sendBtn = document.getElementById('btn-chat-send');
+    if (sendBtn?.disabled) return;
     sendChatMessage();
   });
 
