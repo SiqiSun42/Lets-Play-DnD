@@ -4,5 +4,7 @@ from .game import (
     load_for_ui as load_game_for_ui,
     load_history_for_ui as load_game_history_for_ui,
     history_for_model,
+    append_message as append_game_message,
+    run_game_zh,
 )
 from .session import find_save_meta

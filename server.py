@@ -734,6 +734,54 @@ def consult_message_stream():
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
+@app.post("/api/game/message/stream")
+def game_message_stream():
+    username = session.get("username")
+    if not username:
+        return jsonify({"error": "not logged in"}), 401
+
+    body = request.get_json() or {}
+    text = (body.get("text") or "").strip()
+    save_id = (body.get("id") or "").strip()
+    if not text:
+        return jsonify({"error": "empty"}), 400
+    if not save_id or save_id == "consult":
+        return jsonify({"error": "invalid id"}), 400
+
+    api_key = get_user_api_key(username)
+    if not api_key:
+        return jsonify({"error": "api key unavailable"}), 400
+
+    settings_path = ROOT / "Account" / username / "settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    provider = settings.get("model") or "deepseek"
+
+    from System import configure_client, find_save_meta, run_game_zh
+
+    try:
+        item = find_save_meta(username, save_id)
+        language = item.get("in_game_language") or "zh-CN"
+    except KeyError:
+        return jsonify({"error": "save not found"}), 404
+
+    if not str(language).lower().startswith("zh"):
+        return jsonify({"error": "english game flow not ready"}), 400
+
+    configure_client(api_key=api_key, provider=provider)
+
+    def generate():
+        try:
+            for ev in run_game_zh(username, save_id, text):
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
 @app.get("/api/consult/messages")
 def consult_messages():
     username = session.get("username")

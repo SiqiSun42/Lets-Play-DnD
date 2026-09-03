@@ -117,7 +117,8 @@ function chatInputHasText() {
 }
 
 function syncChatSendEnabled() {
-  const allowSend = window.activeSession?.type === 'consult';
+  const sessionType = window.activeSession?.type;
+  const allowSend = sessionType === 'consult' || sessionType === 'save';
   const sendBtn = document.getElementById('btn-chat-send');
   if (sendBtn) sendBtn.disabled = !allowSend || chatSendBusy || !chatInputHasText();
   const input = document.querySelector('#view-body .chat-input');
@@ -580,7 +581,9 @@ function setChatSendBusy(busy) {
 async function sendChatMessage() {
   const input = document.querySelector('#view-body .chat-input');
   if (!input || chatSendBusy) return;
-  if (window.activeSession?.type !== 'consult') return;
+  const sessionType = window.activeSession?.type;
+  if (sessionType !== 'consult' && sessionType !== 'save') return;
+  if (sessionType === 'save' && !window.activeSession?.id) return;
   const text = input.value.trim();
   if (!text) return;
 
@@ -589,17 +592,25 @@ async function sendChatMessage() {
   input.value = '';
   input.style.height = '';
   setChatSendBusy(true);
+  syncChatSendEnabled();
 
   const dm = beginStreamingDmMessage();
   showThinkingIndicator('DM');
   let contentAcc = '';
   let thinkingAcc = '';
 
+  const streamUrl = sessionType === 'consult'
+    ? 'api/consult/message/stream'
+    : 'api/game/message/stream';
+  const streamBody = sessionType === 'consult'
+    ? { text }
+    : { text, id: window.activeSession.id };
+
   try {
-    const res = await fetch('api/consult/message/stream', {
+    const res = await fetch(streamUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(streamBody),
     });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
@@ -657,7 +668,7 @@ async function sendChatMessage() {
           }
           scrollChatToBottomIfNeeded();
         } else if (ev.type === 'error') {
-          throw new Error(ev.error || 'stream error');
+          throw new Error(ev.error || ev.content || 'stream error');
         }
       }
     }

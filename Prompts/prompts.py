@@ -13,6 +13,12 @@ DECISION_ZH_PROMPT = _read_prompt('consult/decision-zh.md')
 OUTPUT_ZH_PROMPT = _read_prompt('consult/output-zh.md')
 CLASSIFY_ZH_PROMPT = _read_prompt('game_zh/1.classify.md')
 PREPARE_ZH_PROMPT = _read_prompt('game_zh/2.prepare.md')
+META_ZH_PROMPT = _read_prompt('game_zh/3.0 meta.md')
+CHECK_ZH_PROMPT = _read_prompt('game_zh/3.1 check.md')
+ACTION_ZH_PROMPT = _read_prompt('game_zh/3.2 action.md')
+INTERACTION_ZH_PROMPT = _read_prompt('game_zh/3.3 interaction.md')
+EXPLORATION_ZH_PROMPT = _read_prompt('game_zh/3.4 exploration.md')
+
 
 # 英文提示词
 DECISION_EN_PROMPT = _read_prompt('consult/decision-en.md')

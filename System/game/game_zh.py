@@ -8,15 +8,38 @@
 
 import json
 
-from System import call_model, history_for_model
+from System.api_client import call_model
+from .game import append_message, history_for_model
 from Dice import roll_dice
-from Prompts import CLASSIFY_ZH_PROMPT, PREPARE_ZH_PROMPT
-from Tools import classify_tool, normalize_classify_category, dice_tool_zh, rag_tools_zh
+from Prompts import (
+    CLASSIFY_ZH_PROMPT,
+    PREPARE_ZH_PROMPT,
+    META_ZH_PROMPT,
+    CHECK_ZH_PROMPT,
+    ACTION_ZH_PROMPT,
+    INTERACTION_ZH_PROMPT,
+    EXPLORATION_ZH_PROMPT,
+)
+from Tools import (
+    classify_tool_zh,
+    normalize_classify_category_zh,
+    dice_tool_zh,
+    rag_tools_zh,
+    check_tool_zh,
+)
 
-CLASSIFY_INPUT_ERROR = "抱歉，系统未成功接收您上回合的输入，请重新输入。"
-CLASSIFY_MAX_ATTEMPTS = 3
+INPUT_ERROR = "抱歉，系统未成功接收您上回合的输入，请重新输入。"
+MAX_ATTEMPTS = 3
 
 prepare_tools = dice_tool_zh + rag_tools_zh
+
+CATEGORY_PROMPTS = {
+    "元对话": META_ZH_PROMPT,
+    "属性检定": CHECK_ZH_PROMPT,
+    "游戏动作": ACTION_ZH_PROMPT,
+    "角色互动": INTERACTION_ZH_PROMPT,
+    "环境探索": EXPLORATION_ZH_PROMPT,
+}
 
 
 def _build_classify_messages(history_msgs: list, text: str) -> list:
@@ -31,21 +54,22 @@ def classify(history_msgs: list, user_text: str) -> str | None:
     messages = _build_classify_messages(history_msgs, user_text)
     result = call_model(
         messages,
-        tools=classify_tool,
+        tools=classify_tool_zh,
     )
     msg = result["message"]
-    
+
     if msg.tool_calls:
         for tool_call in msg.tool_calls:
             func_name = tool_call.function.name
             args = json.loads(tool_call.function.arguments)
             if func_name == "classify_turn":
-                category = normalize_classify_category(args.get("category"))
+                category = normalize_classify_category_zh(args.get("category"))
                 return category
             else:
                 return None
 
-def _build_prepare_messages(history_msgs: list, text: str, previous_text: str) -> list:
+
+def _build_prepare_messages(history_msgs: list, text: str, previous_text: list) -> list:
     messages = []
     messages.extend(history_msgs)
     messages.append({"role": "system", "content": PREPARE_ZH_PROMPT})
@@ -93,7 +117,116 @@ def prepare(history_msgs: list, user_text: str, previous_text: list) -> list:
 
     return previous_text
 
-def run_stream_game_zh(username: str, save_id: str, text: str):
+
+def _build_generate_messages(
+    history_msgs: list,
+    text: str,
+    previous_text: list,
+    category: str,
+) -> list:
+    prompt = CATEGORY_PROMPTS.get(category)
+    if prompt is None:
+        raise ValueError(f"unknown category: {category}")
+    messages = []
+    messages.extend(history_msgs)
+    messages.append({"role": "system", "content": prompt})
+    messages.append({"role": "user", "content": text})
+    messages.extend(previous_text)
+    return messages
+
+
+def generate_meta(messages: list, previous_text: list):
+    # 元对话：可能使用规则检索等工具，生成规则说明或纠正
+    return None
+
+
+def _parse_check_tools(msg) -> dict | None:
+    openings = []
+    calculations = []
+    endings = []
+
+    if not msg.tool_calls:
+        return None
+
+    for tool_call in msg.tool_calls:
+        func_name = tool_call.function.name
+        args = json.loads(tool_call.function.arguments)
+        if func_name == "narrate_opening":
+            text = (args.get("text") or "").strip()
+            if not text:
+                continue
+            if openings:
+                return None
+            openings.append(text)
+        elif func_name == "calculation_step":
+            formula = (args.get("formula") or "").strip()
+            step_result = (args.get("result") or "").strip()
+            calculations.append((formula, step_result))
+        elif func_name == "narrate_result":
+            text = (args.get("text") or "").strip()
+            if not text:
+                continue
+            if endings:
+                return None
+            endings.append(text)
+
+    if not openings or not calculations or not endings:
+        return None
+
+    sections = []
+    sections.append(openings[0])
+
+    calc_lines = []
+    for formula, step_result in calculations:
+        if formula:
+            calc_lines.append(f"> {formula}")
+        if step_result:
+            calc_lines.append(f"> 结果：{step_result}")
+    sections.append("\n".join(calc_lines))
+    sections.append(endings[0])
+
+    return {"content": "\n\n".join(sections)}
+
+
+def generate_check(messages: list, previous_text: list) -> dict | None:
+    for _ in range(MAX_ATTEMPTS):
+        result = call_model(
+            messages,
+            tools=check_tool_zh,
+        )
+        parsed = _parse_check_tools(result["message"])
+        if parsed is None:
+            continue
+        parsed["thinking"] = result.get("reasoning") or ""
+        return parsed
+    return None
+
+
+def generate_action(messages: list, previous_text: list):
+    # 游戏动作：结合规则与掷骰，生成动作结算与推进
+    return None
+
+
+def generate_interaction(messages: list, previous_text: list):
+    # 角色互动：生成 NPC 对话与社交推进，通常不强制工具
+    return None
+
+
+def generate_exploration(messages: list, previous_text: list):
+    # 环境探索：生成场景与探索描述，通常不强制工具
+    return None
+
+
+GENERATE_HANDLERS = {
+    "元对话": generate_meta,
+    "属性检定": generate_check,
+    "游戏动作": generate_action,
+    "角色互动": generate_interaction,
+    "环境探索": generate_exploration,
+}
+
+
+def run_game_zh(username: str, save_id: str, text: str):
     history = history_for_model(username, save_id)
     history_msgs = history[-20:]
 
@@ -101,16 +234,41 @@ def run_stream_game_zh(username: str, save_id: str, text: str):
     previous_text = []
 
     category = None
-    for _ in range(CLASSIFY_MAX_ATTEMPTS):
+    for _ in range(MAX_ATTEMPTS):
         category = classify(history_msgs, user_text)
         if category:
             previous_text.append({"role": "system", "content": f"本回合对话的类别是：{category}"})
             break
 
     if not category:
-        yield {"type": "error", "content": CLASSIFY_INPUT_ERROR}
+        yield {"type": "error", "error": INPUT_ERROR, "content": INPUT_ERROR}
         return
 
     previous_text = prepare(history_msgs, user_text, previous_text)
 
     yield {"type": "classified", "category": category}
+
+    messages = _build_generate_messages(history_msgs, user_text, previous_text, category)
+    handler = GENERATE_HANDLERS[category]
+    out = handler(messages, previous_text)
+    if not out:
+        yield {"type": "error", "error": INPUT_ERROR, "content": INPUT_ERROR}
+        return
+
+    content = out["content"]
+    thinking = out.get("thinking") or ""
+
+    if thinking:
+        yield {"type": "thinking", "delta": thinking}
+    yield {"type": "content", "delta": content}
+
+    append_message(username, save_id, "user", user_text)
+    append_message(
+        username,
+        save_id,
+        "assistant",
+        content,
+        reasoning=thinking if thinking else None,
+    )
+
+    yield {"type": "done", "content": content, "thinking": thinking}
