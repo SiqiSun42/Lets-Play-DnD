@@ -163,19 +163,15 @@ def run_classify():
 
 def run_prepare():
     history = _get_history()
-    previous_text = _get_previous_text()
-    before_len = len(previous_text)
-
-    result = prepare(history, USER_TEXT, previous_text)
+    result = prepare(history, USER_TEXT)
 
     print(f"func: {TEST_FUNC}")
     print(f"history: {HISTORY_KEY}")
-    print(f"previous_text: {PREVIOUS_TEXT_KEY}")
     print(f"input: {USER_TEXT!r}")
     print(f"model: {api_client.MODEL}")
-    print(f"added: {len(result) - before_len} item(s)")
+    print(f"added: {len(result)} item(s)")
     print()
-    _print_previous_text("previous_text (after prepare):", result)
+    _print_previous_text("prepare extras:", result)
 
 
 RUNNERS = {

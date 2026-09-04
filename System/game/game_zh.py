@@ -6,9 +6,10 @@
 5.（暂时不做）在危险环境下判断是否进入战斗分支
 """
 
+import asyncio
 import json
 
-from System.api_client import call_model
+from System import call_model, call_model_stream
 from .game import append_message, history_for_model
 from Dice import roll_dice
 from Prompts import (
@@ -26,6 +27,7 @@ from Tools import (
     dice_tool_zh,
     rag_tools_zh,
     check_tool_zh,
+    action_tool_zh,
 )
 
 INPUT_ERROR = "抱歉，系统未成功接收您上回合的输入，请重新输入。"
@@ -67,19 +69,19 @@ def classify(history_msgs: list, user_text: str) -> str | None:
                 return category
             else:
                 return None
+    return None
 
 
-def _build_prepare_messages(history_msgs: list, text: str, previous_text: list) -> list:
+def _build_prepare_messages(history_msgs: list, text: str) -> list:
     messages = []
     messages.extend(history_msgs)
     messages.append({"role": "system", "content": PREPARE_ZH_PROMPT})
     messages.append({"role": "user", "content": text})
-    messages.extend(previous_text)
     return messages
 
 
-def prepare(history_msgs: list, user_text: str, previous_text: list) -> list:
-    messages = _build_prepare_messages(history_msgs, user_text, previous_text)
+def prepare(history_msgs: list, user_text: str) -> list:
+    messages = _build_prepare_messages(history_msgs, user_text)
     result = call_model(
         messages,
         tools=prepare_tools,
@@ -87,7 +89,7 @@ def prepare(history_msgs: list, user_text: str, previous_text: list) -> list:
     msg = result["message"]
 
     if not msg.tool_calls:
-        return previous_text
+        return []
 
     dice_lines = []
     rag_parts = []
@@ -110,12 +112,47 @@ def prepare(history_msgs: list, user_text: str, previous_text: list) -> list:
             rag_text = search_rules(query, language="zh-CN")
             rag_parts.append(f"[{context_label}]\n{rag_text}")
 
+    extras = []
     if rag_parts:
-        previous_text.append({"role": "system", "content": "以下是从规则书中检索到的相关内容：\n\n" + "\n\n---\n\n".join(rag_parts)})
+        extras.append({
+            "role": "system",
+            "content": "以下是从规则书中检索到的相关内容：\n" + "\n---\n".join(rag_parts),
+        })
     if dice_lines:
-        previous_text.append({"role": "system", "content": "这是系统提供的本回合骰子值：\n" + "\n".join(dice_lines)})
+        extras.append({
+            "role": "system",
+            "content": "这是系统提供的本回合骰子值：\n" + "\n".join(dice_lines),
+        })
+    return extras
 
-    return previous_text
+
+async def _classify_with_retry(history_msgs: list, user_text: str) -> str | None:
+    for _ in range(MAX_ATTEMPTS):
+        category = await asyncio.to_thread(classify, history_msgs, user_text)
+        if category:
+            return category
+    return None
+
+
+async def _prepare_async(history_msgs: list, user_text: str) -> list:
+    return await asyncio.to_thread(prepare, history_msgs, user_text)
+
+
+async def _classify_and_prepare(history_msgs: list, user_text: str) -> tuple:
+    classify_task = asyncio.create_task(_classify_with_retry(history_msgs, user_text))
+    prepare_task = asyncio.create_task(_prepare_async(history_msgs, user_text))
+
+    category = await classify_task
+    if not category:
+        prepare_task.cancel()
+        try:
+            await prepare_task
+        except asyncio.CancelledError:
+            pass
+        return None, None
+
+    prepare_extras = await prepare_task
+    return category, prepare_extras
 
 
 def _build_generate_messages(
@@ -135,15 +172,11 @@ def _build_generate_messages(
     return messages
 
 
-def generate_meta(messages: list, previous_text: list):
-    # 元对话：可能使用规则检索等工具，生成规则说明或纠正
-    return None
-
-
-def _parse_check_tools(msg) -> dict | None:
+def _parse_narrate_tools(msg, *, require_calculation: bool) -> dict | None:
     openings = []
     calculations = []
     endings = []
+    notes = []
 
     if not msg.tool_calls:
         return None
@@ -169,8 +202,14 @@ def _parse_check_tools(msg) -> dict | None:
             if endings:
                 return None
             endings.append(text)
+        elif func_name == "dm_note":
+            text = (args.get("text") or "").strip()
+            if text:
+                notes.append(text)
 
-    if not openings or not calculations or not endings:
+    if not openings or not endings:
+        return None
+    if require_calculation and not calculations:
         return None
 
     sections = []
@@ -182,10 +221,23 @@ def _parse_check_tools(msg) -> dict | None:
             calc_lines.append(f"> {formula}")
         if step_result:
             calc_lines.append(f"> 结果：{step_result}")
-    sections.append("\n".join(calc_lines))
-    sections.append(endings[0])
+    if calc_lines:
+        sections.append("\n".join(calc_lines))
 
-    return {"content": "\n\n".join(sections)}
+    sections.append(endings[0])
+    for note in notes:
+        sections.append(f"> {note}")
+    return {"content": "\n".join(sections)}
+
+
+def _resolve_tool_or_content(msg, *, require_calculation: bool) -> dict | None:
+    parsed = _parse_narrate_tools(msg, require_calculation=require_calculation)
+    if parsed is not None:
+        return parsed
+    content = (getattr(msg, "content", None) or "").strip()
+    if content:
+        return {"content": content}
+    return None
 
 
 def generate_check(messages: list, previous_text: list) -> dict | None:
@@ -194,7 +246,7 @@ def generate_check(messages: list, previous_text: list) -> dict | None:
             messages,
             tools=check_tool_zh,
         )
-        parsed = _parse_check_tools(result["message"])
+        parsed = _resolve_tool_or_content(result["message"], require_calculation=True)
         if parsed is None:
             continue
         parsed["thinking"] = result.get("reasoning") or ""
@@ -202,27 +254,25 @@ def generate_check(messages: list, previous_text: list) -> dict | None:
     return None
 
 
-def generate_action(messages: list, previous_text: list):
-    # 游戏动作：结合规则与掷骰，生成动作结算与推进
+def generate_action(messages: list, previous_text: list) -> dict | None:
+    for _ in range(MAX_ATTEMPTS):
+        result = call_model(
+            messages,
+            tools=action_tool_zh,
+        )
+        parsed = _resolve_tool_or_content(result["message"], require_calculation=False)
+        if parsed is None:
+            continue
+        parsed["thinking"] = result.get("reasoning") or ""
+        return parsed
     return None
 
 
-def generate_interaction(messages: list, previous_text: list):
-    # 角色互动：生成 NPC 对话与社交推进，通常不强制工具
-    return None
+STREAM_CATEGORIES = {"元对话", "角色互动", "环境探索"}
 
-
-def generate_exploration(messages: list, previous_text: list):
-    # 环境探索：生成场景与探索描述，通常不强制工具
-    return None
-
-
-GENERATE_HANDLERS = {
-    "元对话": generate_meta,
+TOOL_HANDLERS = {
     "属性检定": generate_check,
     "游戏动作": generate_action,
-    "角色互动": generate_interaction,
-    "环境探索": generate_exploration,
 }
 
 
@@ -231,36 +281,54 @@ def run_game_zh(username: str, save_id: str, text: str):
     history_msgs = history[-20:]
 
     user_text = text.strip()
-    previous_text = []
 
-    category = None
-    for _ in range(MAX_ATTEMPTS):
-        category = classify(history_msgs, user_text)
-        if category:
-            previous_text.append({"role": "system", "content": f"本回合对话的类别是：{category}"})
-            break
-
+    category, prepare_extras = asyncio.run(
+        _classify_and_prepare(history_msgs, user_text)
+    )
     if not category:
         yield {"type": "error", "error": INPUT_ERROR, "content": INPUT_ERROR}
         return
 
-    previous_text = prepare(history_msgs, user_text, previous_text)
+    previous_text = [
+        {"role": "system", "content": f"本回合对话的类别是：{category}"},
+    ]
+    previous_text.extend(prepare_extras)
 
     yield {"type": "classified", "category": category}
 
     messages = _build_generate_messages(history_msgs, user_text, previous_text, category)
-    handler = GENERATE_HANDLERS[category]
-    out = handler(messages, previous_text)
-    if not out:
+
+    full_thinking = []
+    full_content = []
+
+    if category in STREAM_CATEGORIES:
+        for ev in call_model_stream(messages):
+            if ev["type"] == "thinking":
+                full_thinking.append(ev["delta"])
+                yield ev
+            elif ev["type"] == "content":
+                full_content.append(ev["delta"])
+                yield ev
+    else:
+        handler = TOOL_HANDLERS[category]
+        out = handler(messages, previous_text)
+        if not out:
+            yield {"type": "error", "error": INPUT_ERROR, "content": INPUT_ERROR}
+            return
+        content = out["content"]
+        thinking = out.get("thinking") or ""
+        if thinking:
+            full_thinking.append(thinking)
+            yield {"type": "thinking", "delta": thinking}
+        if content:
+            full_content.append(content)
+            yield {"type": "content", "delta": content}
+
+    content = "".join(full_content)
+    thinking = "".join(full_thinking)
+    if not content:
         yield {"type": "error", "error": INPUT_ERROR, "content": INPUT_ERROR}
         return
-
-    content = out["content"]
-    thinking = out.get("thinking") or ""
-
-    if thinking:
-        yield {"type": "thinking", "delta": thinking}
-    yield {"type": "content", "delta": content}
 
     append_message(username, save_id, "user", user_text)
     append_message(
