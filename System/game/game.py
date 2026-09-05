@@ -158,3 +158,81 @@ def history_for_model(username: str, save_id: str) -> list:
         return _rows_for_model(conn)
     finally:
         conn.close()
+
+
+def _save_root(username: str, save_id: str) -> Path:
+    return ROOT / "Account" / username / "Saves" / save_id
+
+
+def _save_data_root(username: str, save_id: str) -> Path:
+    return _save_root(username, save_id) / "data"
+
+
+def _safe_under(base: Path, target: Path) -> bool:
+    try:
+        target.resolve().relative_to(base.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _tree_lines(directory: Path, prefix: str = "") -> list:
+    entries = sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    lines = []
+    for index, entry in enumerate(entries):
+        last = index == len(entries) - 1
+        branch = "└── " if last else "├── "
+        lines.append(f"{prefix}{branch}{entry.name}")
+        if entry.is_dir():
+            extension = "    " if last else "│   "
+            lines.extend(_tree_lines(entry, prefix + extension))
+    return lines
+
+
+def panel_dir_listing(username: str, save_id: str) -> str:
+    data_root = _save_data_root(username, save_id)
+    if not data_root.is_dir():
+        return "这是当前的文件目录：\n（空）"
+    lines = ["data/"]
+    lines.extend(_tree_lines(data_root))
+    return "这是当前的文件目录：\n" + "\n".join(lines)
+
+
+def _normalize_panel_rel(file_path: str) -> str:
+    text = (file_path or "").strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    if text.startswith("data/"):
+        text = text[5:]
+    return text.lstrip("/")
+
+
+def _resolve_panel_file(username: str, save_id: str, file_path: str) -> tuple:
+    rel = _normalize_panel_rel(file_path)
+    if not rel or ".." in rel.split("/"):
+        return None, None
+    data_root = _save_data_root(username, save_id)
+    target = data_root / rel
+    if not target.is_file() or not _safe_under(data_root, target):
+        return None, f"/{rel}"
+    return target, f"/{rel}"
+
+
+def read_panel_md(username: str, save_id: str, file_path: str) -> str | None:
+    target, display = _resolve_panel_file(username, save_id, file_path)
+    if target is None or display is None:
+        return None
+    if target.suffix.lower() != ".md":
+        return None
+    content = target.read_text(encoding="utf-8")
+    return f"这是{display}的内容：\n{content}"
+
+
+def read_panel_json(username: str, save_id: str, file_path: str) -> str | None:
+    target, display = _resolve_panel_file(username, save_id, file_path)
+    if target is None or display is None:
+        return None
+    if target.suffix.lower() != ".json":
+        return None
+    content = target.read_text(encoding="utf-8")
+    return f"这是{display}的内容：\n{content}"

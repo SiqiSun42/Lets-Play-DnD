@@ -7,3 +7,9 @@ from .game_zh.classfiy_tool import (
 from .dice.dice_tool_zh import dice_tool as dice_tool_zh
 from .dice.dice_battle_tool_zh import dice_battle_tool as dice_battle_tool_zh
 from .game_zh.check_tool import check_tool as check_tool_zh, action_tool as action_tool_zh
+from .game_zh.panel_tool import panel_tool as panel_tool_zh
+from .mcp.mcp_tools import (
+    get_tools as get_mcp_tools,
+    get_update_tools,
+    execute_tool as execute_mcp_tool,
+)

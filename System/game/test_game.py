@@ -10,12 +10,15 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 import System.api_client as api_client
-from System.game.game_zh import classify, prepare
+from System.game import panel_dir_listing
+from System.game.game_zh import classify, prepare, load_game_data
 
 TEST_FUNC = "prepare"  # "classify", "prepare"
 HISTORY_KEY = "history_3"
 USER_TEXT = "是的，进行一次察觉检定。"
 PREVIOUS_TEXT_KEY = "previous_2"
+TEST_USERNAME = "admin"
+TEST_SAVE_ID = "game_20260822170205"
 
 HISTORIES = {
     "history_1": [],
@@ -153,7 +156,8 @@ def _print_previous_text(label: str, items: list):
 
 def run_classify():
     history = _get_history()
-    result = classify(history, USER_TEXT)
+    game_data = load_game_data(TEST_USERNAME, TEST_SAVE_ID)
+    result = classify(history, USER_TEXT, game_data)
     print(f"func: {TEST_FUNC}")
     print(f"history: {HISTORY_KEY}")
     print(f"input: {USER_TEXT!r}")
@@ -163,15 +167,21 @@ def run_classify():
 
 def run_prepare():
     history = _get_history()
-    result = prepare(history, USER_TEXT)
+    game_data = load_game_data(TEST_USERNAME, TEST_SAVE_ID)
+    panel_dir = panel_dir_listing(TEST_USERNAME, TEST_SAVE_ID)
+    extras, game_data = prepare(
+        history, USER_TEXT, game_data, panel_dir, TEST_USERNAME, TEST_SAVE_ID
+    )
 
     print(f"func: {TEST_FUNC}")
     print(f"history: {HISTORY_KEY}")
     print(f"input: {USER_TEXT!r}")
     print(f"model: {api_client.MODEL}")
-    print(f"added: {len(result)} item(s)")
+    print(f"extras: {len(extras)} item(s)")
+    print(f"game_data: {len(game_data)} item(s)")
     print()
-    _print_previous_text("prepare extras:", result)
+    _print_previous_text("prepare extras:", extras)
+    _print_previous_text("game_data:", game_data)
 
 
 RUNNERS = {

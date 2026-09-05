@@ -10,16 +10,25 @@ import asyncio
 import json
 
 from System import call_model, call_model_stream
-from .game import append_message, history_for_model
+from .game import (
+    append_message,
+    history_for_model,
+    read_panel_md,
+    read_panel_json,
+    panel_dir_listing,
+    ROOT,
+)
 from Dice import roll_dice
 from Prompts import (
     CLASSIFY_ZH_PROMPT,
     PREPARE_ZH_PROMPT,
+    DM_NOTE_ZH_PROMPT,
     META_ZH_PROMPT,
     CHECK_ZH_PROMPT,
     ACTION_ZH_PROMPT,
     INTERACTION_ZH_PROMPT,
     EXPLORATION_ZH_PROMPT,
+    UPDATE_ZH_PROMPT,
 )
 from Tools import (
     classify_tool_zh,
@@ -28,12 +37,15 @@ from Tools import (
     rag_tools_zh,
     check_tool_zh,
     action_tool_zh,
+    panel_tool_zh,
+    get_update_tools,
+    execute_mcp_tool,
 )
 
 INPUT_ERROR = "抱歉，系统未成功接收您上回合的输入，请重新输入。"
 MAX_ATTEMPTS = 3
 
-prepare_tools = dice_tool_zh + rag_tools_zh
+prepare_tools = dice_tool_zh + rag_tools_zh + panel_tool_zh
 
 CATEGORY_PROMPTS = {
     "元对话": META_ZH_PROMPT,
@@ -44,16 +56,51 @@ CATEGORY_PROMPTS = {
 }
 
 
-def _build_classify_messages(history_msgs: list, text: str) -> list:
+def load_game_data(username: str, save_id: str) -> list:
+    game_data = []
+    current_info = read_panel_json(username, save_id, "current_info.json")
+    if current_info:
+        game_data.append({"role": "system", "content": current_info})
+
+    allies_dir = (
+        ROOT / "Account" / username / "Saves" / save_id / "data" / "characters" / "allies"
+    )
+    if allies_dir.is_dir():
+        for path in sorted(allies_dir.glob("*.md"), key=lambda p: p.name.lower()):
+            rel = f"characters/allies/{path.name}"
+            content = read_panel_md(username, save_id, rel)
+            if content:
+                game_data.append({"role": "system", "content": content})
+
+    location = ""
+    info_path = (
+        ROOT / "Account" / username / "Saves" / save_id / "data" / "current_info.json"
+    )
+    if info_path.is_file():
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+        location = (info.get("current_location") or "").strip()
+    if location:
+        location_md = read_panel_md(username, save_id, f"world/{location}.md")
+        if location_md:
+            game_data.append({"role": "system", "content": location_md})
+
+    plot_md = read_panel_md(username, save_id, "plot/cur_main_plot.md")
+    if plot_md:
+        game_data.append({"role": "system", "content": plot_md})
+    return game_data
+
+
+def _build_classify_messages(history_msgs: list, text: str, game_data: list) -> list:
     messages = []
     messages.extend(history_msgs)
     messages.append({"role": "system", "content": CLASSIFY_ZH_PROMPT})
+    messages.extend(game_data)
     messages.append({"role": "user", "content": text})
     return messages
 
 
-def classify(history_msgs: list, user_text: str) -> str | None:
-    messages = _build_classify_messages(history_msgs, user_text)
+def classify(history_msgs: list, user_text: str, game_data: list) -> str | None:
+    messages = _build_classify_messages(history_msgs, user_text, game_data)
     result = call_model(
         messages,
         tools=classify_tool_zh,
@@ -72,16 +119,30 @@ def classify(history_msgs: list, user_text: str) -> str | None:
     return None
 
 
-def _build_prepare_messages(history_msgs: list, text: str) -> list:
+def _build_prepare_messages(
+    history_msgs: list,
+    text: str,
+    game_data: list,
+    panel_dir: str,
+) -> list:
     messages = []
     messages.extend(history_msgs)
     messages.append({"role": "system", "content": PREPARE_ZH_PROMPT})
+    messages.extend(game_data)
+    messages.append({"role": "system", "content": panel_dir})
     messages.append({"role": "user", "content": text})
     return messages
 
 
-def prepare(history_msgs: list, user_text: str) -> list:
-    messages = _build_prepare_messages(history_msgs, user_text)
+def prepare(
+    history_msgs: list,
+    user_text: str,
+    game_data: list,
+    panel_dir: str,
+    username: str,
+    save_id: str,
+) -> tuple:
+    messages = _build_prepare_messages(history_msgs, user_text, game_data, panel_dir)
     result = call_model(
         messages,
         tools=prepare_tools,
@@ -89,7 +150,7 @@ def prepare(history_msgs: list, user_text: str) -> list:
     msg = result["message"]
 
     if not msg.tool_calls:
-        return []
+        return [], game_data
 
     dice_lines = []
     rag_parts = []
@@ -111,6 +172,17 @@ def prepare(history_msgs: list, user_text: str) -> list:
             context_label = args.get("context_label", "")
             rag_text = search_rules(query, language="zh-CN")
             rag_parts.append(f"[{context_label}]\n{rag_text}")
+        elif func_name == "fetch_panel_file":
+            path = (args.get("path") or "").strip()
+            lower = path.lower()
+            if lower.endswith(".json"):
+                content = read_panel_json(username, save_id, path)
+            elif lower.endswith(".md"):
+                content = read_panel_md(username, save_id, path)
+            else:
+                content = None
+            if content:
+                game_data.append({"role": "system", "content": content})
 
     extras = []
     if rag_parts:
@@ -123,24 +195,44 @@ def prepare(history_msgs: list, user_text: str) -> list:
             "role": "system",
             "content": "这是系统提供的本回合骰子值：\n" + "\n".join(dice_lines),
         })
-    return extras
+    return extras, game_data
 
 
-async def _classify_with_retry(history_msgs: list, user_text: str) -> str | None:
+async def _classify_with_retry(history_msgs: list, user_text: str, game_data: list) -> str | None:
     for _ in range(MAX_ATTEMPTS):
-        category = await asyncio.to_thread(classify, history_msgs, user_text)
+        category = await asyncio.to_thread(classify, history_msgs, user_text, game_data)
         if category:
             return category
     return None
 
 
-async def _prepare_async(history_msgs: list, user_text: str) -> list:
-    return await asyncio.to_thread(prepare, history_msgs, user_text)
+async def _prepare_async(
+    history_msgs: list,
+    user_text: str,
+    game_data: list,
+    panel_dir: str,
+    username: str,
+    save_id: str,
+) -> tuple:
+    return await asyncio.to_thread(
+        prepare, history_msgs, user_text, game_data, panel_dir, username, save_id
+    )
 
 
-async def _classify_and_prepare(history_msgs: list, user_text: str) -> tuple:
-    classify_task = asyncio.create_task(_classify_with_retry(history_msgs, user_text))
-    prepare_task = asyncio.create_task(_prepare_async(history_msgs, user_text))
+async def _classify_and_prepare(
+    history_msgs: list,
+    user_text: str,
+    game_data: list,
+    panel_dir: str,
+    username: str,
+    save_id: str,
+) -> tuple:
+    classify_task = asyncio.create_task(
+        _classify_with_retry(history_msgs, user_text, game_data)
+    )
+    prepare_task = asyncio.create_task(
+        _prepare_async(history_msgs, user_text, game_data, panel_dir, username, save_id)
+    )
 
     category = await classify_task
     if not category:
@@ -149,10 +241,10 @@ async def _classify_and_prepare(history_msgs: list, user_text: str) -> tuple:
             await prepare_task
         except asyncio.CancelledError:
             pass
-        return None, None
+        return None, None, None
 
-    prepare_extras = await prepare_task
-    return category, prepare_extras
+    prepare_extras, game_data = await prepare_task
+    return category, prepare_extras, game_data
 
 
 def _build_generate_messages(
@@ -160,6 +252,7 @@ def _build_generate_messages(
     text: str,
     previous_text: list,
     category: str,
+    game_data: list,
 ) -> list:
     prompt = CATEGORY_PROMPTS.get(category)
     if prompt is None:
@@ -167,6 +260,9 @@ def _build_generate_messages(
     messages = []
     messages.extend(history_msgs)
     messages.append({"role": "system", "content": prompt})
+    if category != "元对话":
+        messages.append({"role": "system", "content": DM_NOTE_ZH_PROMPT})
+    messages.extend(game_data)
     messages.append({"role": "user", "content": text})
     messages.extend(previous_text)
     return messages
@@ -276,14 +372,65 @@ TOOL_HANDLERS = {
 }
 
 
+def _build_update_messages(
+    history_msgs: list,
+    user_text: str,
+    content: str,
+    game_data: list,
+    panel_dir: str,
+) -> list:
+    messages = []
+    messages.extend(history_msgs)
+    messages.append({"role": "system", "content": UPDATE_ZH_PROMPT})
+    messages.append({"role": "user", "content": user_text})
+    messages.append({"role": "assistant", "content": content})
+    messages.extend(game_data)
+    messages.append({"role": "system", "content": panel_dir})
+    return messages
+
+
+def update_panel(
+    history_msgs: list,
+    user_text: str,
+    content: str,
+    game_data: list,
+    panel_dir: str,
+    username: str,
+    save_id: str,
+) -> None:
+    data_root = ROOT / "Account" / username / "Saves" / save_id / "data"
+    update_tools = get_update_tools(data_root)
+    messages = _build_update_messages(
+        history_msgs, user_text, content, game_data, panel_dir
+    )
+    result = call_model(
+        messages,
+        tools=update_tools,
+    )
+    msg = result["message"]
+    if not msg.tool_calls:
+        return
+
+    allowed_names = {tool["function"]["name"] for tool in update_tools}
+    for tool_call in msg.tool_calls:
+        name = tool_call.function.name
+        if name in allowed_names:
+            args = json.loads(tool_call.function.arguments)
+            execute_mcp_tool(name, args, allowed_dir=data_root)
+
+
 def run_game_zh(username: str, save_id: str, text: str):
     history = history_for_model(username, save_id)
     history_msgs = history[-20:]
 
     user_text = text.strip()
+    game_data = load_game_data(username, save_id)
+    panel_dir = panel_dir_listing(username, save_id)
 
-    category, prepare_extras = asyncio.run(
-        _classify_and_prepare(history_msgs, user_text)
+    category, prepare_extras, game_data = asyncio.run(
+        _classify_and_prepare(
+            history_msgs, user_text, game_data, panel_dir, username, save_id
+        )
     )
     if not category:
         yield {"type": "error", "error": INPUT_ERROR, "content": INPUT_ERROR}
@@ -296,7 +443,9 @@ def run_game_zh(username: str, save_id: str, text: str):
 
     yield {"type": "classified", "category": category}
 
-    messages = _build_generate_messages(history_msgs, user_text, previous_text, category)
+    messages = _build_generate_messages(
+        history_msgs, user_text, previous_text, category, game_data
+    )
 
     full_thinking = []
     full_content = []
@@ -337,6 +486,10 @@ def run_game_zh(username: str, save_id: str, text: str):
         "assistant",
         content,
         reasoning=thinking if thinking else None,
+    )
+
+    update_panel(
+        history_msgs, user_text, content, game_data, panel_dir, username, save_id
     )
 
     yield {"type": "done", "content": content, "thinking": thinking}
