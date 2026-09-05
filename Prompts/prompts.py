@@ -20,6 +20,8 @@ ACTION_ZH_PROMPT = _read_prompt('game_zh/3.2 action.md')
 INTERACTION_ZH_PROMPT = _read_prompt('game_zh/3.3 interaction.md')
 EXPLORATION_ZH_PROMPT = _read_prompt('game_zh/3.4 exploration.md')
 UPDATE_ZH_PROMPT = _read_prompt('game_zh/4. update.md')
+UPDATE_INVENTORY_STATUS_ZH_PROMPT = _read_prompt('game_zh/4.1 update_inventory_status.md')
+UPDATE_LOCATION_ZH_PROMPT = _read_prompt('game_zh/4.2 update_location.md')
 
 # 英文提示词
 DECISION_EN_PROMPT = _read_prompt('consult/decision-en.md')

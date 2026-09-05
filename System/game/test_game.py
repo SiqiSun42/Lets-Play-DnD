@@ -157,12 +157,13 @@ def _print_previous_text(label: str, items: list):
 def run_classify():
     history = _get_history()
     game_data = load_game_data(TEST_USERNAME, TEST_SAVE_ID)
-    result = classify(history, USER_TEXT, game_data)
+    panel_dir = panel_dir_listing(TEST_USERNAME, TEST_SAVE_ID)
+    category = classify(history, USER_TEXT, game_data, panel_dir)
     print(f"func: {TEST_FUNC}")
     print(f"history: {HISTORY_KEY}")
     print(f"input: {USER_TEXT!r}")
     print(f"model: {api_client.MODEL}")
-    print(f"result: {result!r}")
+    print(f"category: {category!r}")
 
 
 def run_prepare():

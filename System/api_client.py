@@ -96,9 +96,6 @@ def call_model(
     if reasoning_effort is None:
         reasoning_effort = REASONING_EFFORT
 
-    if tools or tool_choice == "required":
-        enable_thinking = False
-
     requset_params = {
         "model": model,
         "messages": _prepare_messages(messages, enable_thinking=enable_thinking),

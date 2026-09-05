@@ -29,6 +29,8 @@ from Prompts import (
     INTERACTION_ZH_PROMPT,
     EXPLORATION_ZH_PROMPT,
     UPDATE_ZH_PROMPT,
+    UPDATE_INVENTORY_STATUS_ZH_PROMPT,
+    UPDATE_LOCATION_ZH_PROMPT,
 )
 from Tools import (
     classify_tool_zh,
@@ -38,11 +40,16 @@ from Tools import (
     check_tool_zh,
     action_tool_zh,
     panel_tool_zh,
+    update_tool_zh,
+    parse_update_plan_zh,
     get_update_tools,
+    get_update_location_tools,
     execute_mcp_tool,
 )
 
-INPUT_ERROR = "抱歉，系统未成功接收您上回合的输入，请重新输入。"
+CLASSIFY_ERROR = "抱歉，系统未能识别本回合行动类型，请重新输入。"
+GENERATE_TOOL_ERROR = "抱歉，系统未能完成本回合结算，请重新输入。"
+GENERATE_EMPTY_ERROR = "抱歉，系统未能生成有效回复，请重新输入。"
 MAX_ATTEMPTS = 3
 
 prepare_tools = dice_tool_zh + rag_tools_zh + panel_tool_zh
@@ -90,17 +97,28 @@ def load_game_data(username: str, save_id: str) -> list:
     return game_data
 
 
-def _build_classify_messages(history_msgs: list, text: str, game_data: list) -> list:
+def _build_classify_messages(
+    history_msgs: list,
+    text: str,
+    game_data: list,
+    panel_dir: str,
+) -> list:
     messages = []
     messages.extend(history_msgs)
     messages.append({"role": "system", "content": CLASSIFY_ZH_PROMPT})
     messages.extend(game_data)
+    messages.append({"role": "system", "content": panel_dir})
     messages.append({"role": "user", "content": text})
     return messages
 
 
-def classify(history_msgs: list, user_text: str, game_data: list) -> str | None:
-    messages = _build_classify_messages(history_msgs, user_text, game_data)
+def classify(
+    history_msgs: list,
+    user_text: str,
+    game_data: list,
+    panel_dir: str,
+) -> str | None:
+    messages = _build_classify_messages(history_msgs, user_text, game_data, panel_dir)
     result = call_model(
         messages,
         tools=classify_tool_zh,
@@ -113,9 +131,14 @@ def classify(history_msgs: list, user_text: str, game_data: list) -> str | None:
             args = json.loads(tool_call.function.arguments)
             if func_name == "classify_turn":
                 category = normalize_classify_category_zh(args.get("category"))
+                if not category:
+                    print(f"classify fail: {args.get('category')!r}")
+                    return None
                 return category
             else:
+                print(f"classify fail: {func_name!r}")
                 return None
+    print("classify fail: None")
     return None
 
 
@@ -198,9 +221,16 @@ def prepare(
     return extras, game_data
 
 
-async def _classify_with_retry(history_msgs: list, user_text: str, game_data: list) -> str | None:
+async def _classify_with_retry(
+    history_msgs: list,
+    user_text: str,
+    game_data: list,
+    panel_dir: str,
+) -> str | None:
     for _ in range(MAX_ATTEMPTS):
-        category = await asyncio.to_thread(classify, history_msgs, user_text, game_data)
+        category = await asyncio.to_thread(
+            classify, history_msgs, user_text, game_data, panel_dir
+        )
         if category:
             return category
     return None
@@ -228,7 +258,7 @@ async def _classify_and_prepare(
     save_id: str,
 ) -> tuple:
     classify_task = asyncio.create_task(
-        _classify_with_retry(history_msgs, user_text, game_data)
+        _classify_with_retry(history_msgs, user_text, game_data, panel_dir)
     )
     prepare_task = asyncio.create_task(
         _prepare_async(history_msgs, user_text, game_data, panel_dir, username, save_id)
@@ -393,7 +423,176 @@ def _build_update_messages(
     return messages
 
 
-def update_panel(
+EMPTY_UPDATE_PLAN = {
+    "time": None,
+    "location": None,
+    "is_inventory_update": False,
+    "is_status_update": False,
+    "is_character_update": False,
+    "is_location_update": False,
+}
+
+
+def set_current_time(username: str, save_id: str, time_value: str) -> None:
+    info_path = (
+        ROOT / "Account" / username / "Saves" / save_id / "data" / "current_info.json"
+    )
+    if not info_path.is_file():
+        return
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["current_time"] = time_value
+    info_path.write_text(
+        json.dumps(info, ensure_ascii=False, indent=4) + "\n",
+        encoding="utf-8",
+    )
+
+
+def set_current_location(username: str, save_id: str, location_value: str) -> None:
+    info_path = (
+        ROOT / "Account" / username / "Saves" / save_id / "data" / "current_info.json"
+    )
+    if not info_path.is_file():
+        return
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["current_location"] = location_value
+    info_path.write_text(
+        json.dumps(info, ensure_ascii=False, indent=4) + "\n",
+        encoding="utf-8",
+    )
+
+
+def get_current_location(username: str, save_id: str) -> str | None:
+    info_path = (
+        ROOT / "Account" / username / "Saves" / save_id / "data" / "current_info.json"
+    )
+    if not info_path.is_file():
+        return None
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    location = (info.get("current_location") or "").strip()
+    return location or None
+
+
+def _location_file_exists(username: str, save_id: str, location_name: str) -> bool:
+    if not location_name:
+        return False
+    path = (
+        ROOT
+        / "Account"
+        / username
+        / "Saves"
+        / save_id
+        / "data"
+        / "world"
+        / f"{location_name}.md"
+    )
+    return path.is_file()
+
+
+def _append_location_panel_msg(
+    messages: list,
+    username: str,
+    save_id: str,
+    location_name: str,
+) -> None:
+    if not location_name:
+        return
+    location_md = read_panel_md(username, save_id, f"world/{location_name}.md")
+    if location_md:
+        messages.append({"role": "system", "content": location_md})
+    else:
+        messages.append({
+            "role": "system",
+            "content": "该地点尚未创建，需要新建同名地点",
+        })
+
+
+def _should_update_location(plan: dict, username: str, save_id: str) -> bool:
+    if plan.get("is_location_update"):
+        return True
+    location = plan.get("location")
+    if location and not _location_file_exists(username, save_id, location):
+        return True
+    return False
+
+
+def _load_allies_panel_msgs(username: str, save_id: str, kind: str) -> list:
+    allies_dir = (
+        ROOT / "Account" / username / "Saves" / save_id / "data" / kind / "allies"
+    )
+    messages = []
+    if not allies_dir.is_dir():
+        return messages
+    for path in sorted(allies_dir.glob("*.md"), key=lambda p: p.name.lower()):
+        rel = f"{kind}/allies/{path.name}"
+        content = read_panel_md(username, save_id, rel)
+        if content:
+            messages.append({"role": "system", "content": content})
+    return messages
+
+
+def _build_update_inventory_status_messages(
+    history_msgs: list,
+    user_text: str,
+    content: str,
+    panel_dir: str,
+    username: str,
+    save_id: str,
+    plan: dict,
+) -> list:
+    messages = []
+    messages.extend(history_msgs)
+    messages.append({"role": "system", "content": UPDATE_INVENTORY_STATUS_ZH_PROMPT})
+    messages.append({"role": "user", "content": user_text})
+    messages.append({
+        "role": "assistant",
+        "content": content,
+        "reasoning_content": "",
+    })
+    if plan.get("is_inventory_update"):
+        inventory = read_panel_md(username, save_id, "inventory.md")
+        if inventory:
+            messages.append({"role": "system", "content": inventory})
+    if plan.get("is_status_update"):
+        messages.extend(_load_allies_panel_msgs(username, save_id, "status"))
+    if plan.get("is_character_update"):
+        messages.extend(_load_allies_panel_msgs(username, save_id, "characters"))
+    messages.append({"role": "system", "content": panel_dir})
+    return messages
+
+
+def _build_update_location_messages(
+    history_msgs: list,
+    user_text: str,
+    content: str,
+    panel_dir: str,
+    username: str,
+    save_id: str,
+    current_location_name: str | None,
+    new_location_name: str | None = None,
+) -> list:
+    messages = []
+    messages.extend(history_msgs)
+    messages.append({"role": "system", "content": UPDATE_LOCATION_ZH_PROMPT})
+    messages.append({"role": "user", "content": user_text})
+    messages.append({
+        "role": "assistant",
+        "content": content,
+        "reasoning_content": "",
+    })
+    _append_location_panel_msg(messages, username, save_id, current_location_name)
+    if (
+        new_location_name
+        and new_location_name != current_location_name
+    ):
+        _append_location_panel_msg(messages, username, save_id, new_location_name)
+    map_json = read_panel_json(username, save_id, "world/map.json")
+    if map_json:
+        messages.append({"role": "system", "content": map_json})
+    messages.append({"role": "system", "content": panel_dir})
+    return messages
+
+
+def plan_panel_update(
     history_msgs: list,
     user_text: str,
     content: str,
@@ -401,11 +600,45 @@ def update_panel(
     panel_dir: str,
     username: str,
     save_id: str,
+) -> dict:
+    messages = _build_update_messages(
+        history_msgs, user_text, content, game_data, panel_dir
+    )
+    for _ in range(MAX_ATTEMPTS):
+        result = call_model(
+            messages,
+            tools=update_tool_zh,
+        )
+        msg = result["message"]
+        if not msg.tool_calls:
+            continue
+        for tool_call in msg.tool_calls:
+            if tool_call.function.name != "plan_panel_update":
+                continue
+            args = json.loads(tool_call.function.arguments)
+            return parse_update_plan_zh(args)
+    return dict(EMPTY_UPDATE_PLAN)
+
+
+def update_inventory_status(
+    history_msgs: list,
+    user_text: str,
+    content: str,
+    panel_dir: str,
+    username: str,
+    save_id: str,
+    plan: dict,
 ) -> None:
     data_root = ROOT / "Account" / username / "Saves" / save_id / "data"
     update_tools = get_update_tools(data_root)
-    messages = _build_update_messages(
-        history_msgs, user_text, content, game_data, panel_dir
+    messages = _build_update_inventory_status_messages(
+        history_msgs,
+        user_text,
+        content,
+        panel_dir,
+        username,
+        save_id,
+        plan,
     )
     result = call_model(
         messages,
@@ -415,13 +648,107 @@ def update_panel(
     msg = result["message"]
     if not msg.tool_calls:
         return
-
     allowed_names = {tool["function"]["name"] for tool in update_tools}
     for tool_call in msg.tool_calls:
         name = tool_call.function.name
-        if name in allowed_names:
-            args = json.loads(tool_call.function.arguments)
-            execute_mcp_tool(name, args, allowed_dir=data_root)
+        if name not in allowed_names:
+            continue
+        args = json.loads(tool_call.function.arguments)
+        execute_mcp_tool(name, args, allowed_dir=data_root)
+
+
+def update_location(
+    history_msgs: list,
+    user_text: str,
+    content: str,
+    panel_dir: str,
+    username: str,
+    save_id: str,
+    current_location_name: str | None,
+    new_location_name: str | None = None,
+) -> None:
+    data_root = ROOT / "Account" / username / "Saves" / save_id / "data"
+    update_tools = get_update_location_tools(data_root)
+    messages = _build_update_location_messages(
+        history_msgs,
+        user_text,
+        content,
+        panel_dir,
+        username,
+        save_id,
+        current_location_name,
+        new_location_name,
+    )
+    result = call_model(
+        messages,
+        tools=update_tools,
+        enable_thinking=False,
+    )
+    msg = result["message"]
+    if not msg.tool_calls:
+        return
+    allowed_names = {tool["function"]["name"] for tool in update_tools}
+    for tool_call in msg.tool_calls:
+        name = tool_call.function.name
+        if name not in allowed_names:
+            continue
+        args = json.loads(tool_call.function.arguments)
+        execute_mcp_tool(name, args, allowed_dir=data_root)
+
+
+def _apply_panel_updates(
+    history_msgs: list,
+    user_text: str,
+    content: str,
+    game_data: list,
+    panel_dir: str,
+    username: str,
+    save_id: str,
+) -> dict:
+    plan = plan_panel_update(
+        history_msgs,
+        user_text,
+        content,
+        game_data,
+        panel_dir,
+        username,
+        save_id,
+    )
+    if plan.get("time"):
+        set_current_time(username, save_id, plan["time"])
+
+    old_location = get_current_location(username, save_id)
+    new_location = plan.get("location")
+    if new_location:
+        set_current_location(username, save_id, new_location)
+
+    if _should_update_location(plan, username, save_id):
+        update_location(
+            history_msgs,
+            user_text,
+            content,
+            panel_dir,
+            username,
+            save_id,
+            old_location,
+            new_location,
+        )
+
+    if (
+        plan.get("is_inventory_update")
+        or plan.get("is_status_update")
+        or plan.get("is_character_update")
+    ):
+        update_inventory_status(
+            history_msgs,
+            user_text,
+            content,
+            panel_dir,
+            username,
+            save_id,
+            plan,
+        )
+    return plan
 
 
 def run_game_zh(username: str, save_id: str, text: str):
@@ -438,7 +765,7 @@ def run_game_zh(username: str, save_id: str, text: str):
         )
     )
     if not category:
-        yield {"type": "error", "error": INPUT_ERROR, "content": INPUT_ERROR}
+        yield {"type": "error", "error": CLASSIFY_ERROR, "content": CLASSIFY_ERROR}
         return
 
     previous_text = [
@@ -467,7 +794,7 @@ def run_game_zh(username: str, save_id: str, text: str):
         handler = TOOL_HANDLERS[category]
         out = handler(messages, previous_text)
         if not out:
-            yield {"type": "error", "error": INPUT_ERROR, "content": INPUT_ERROR}
+            yield {"type": "error", "error": GENERATE_TOOL_ERROR, "content": GENERATE_TOOL_ERROR}
             return
         content = out["content"]
         thinking = out.get("thinking") or ""
@@ -481,7 +808,7 @@ def run_game_zh(username: str, save_id: str, text: str):
     content = "".join(full_content)
     thinking = "".join(full_thinking)
     if not content:
-        yield {"type": "error", "error": INPUT_ERROR, "content": INPUT_ERROR}
+        yield {"type": "error", "error": GENERATE_EMPTY_ERROR, "content": GENERATE_EMPTY_ERROR}
         return
 
     append_message(username, save_id, "user", user_text)
@@ -493,7 +820,7 @@ def run_game_zh(username: str, save_id: str, text: str):
         reasoning=thinking if thinking else None,
     )
 
-    update_panel(
+    _apply_panel_updates(
         history_msgs,
         user_text,
         content,

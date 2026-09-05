@@ -8,7 +8,8 @@ from mcp.client.session import ClientSession
 ROOT = Path(__file__).resolve().parent.parent.parent
 
 _mcp_tools_for_api = None
-UPDATE_TOOL_NAMES = ("edit_file", "write_file")
+UPDATE_TOOL_NAMES = ("edit_file",)
+UPDATE_LOCATION_TOOL_NAMES = ("edit_file", "write_file")
 
 
 def _filesystem_server(allowed_dir: Path | str) -> list:
@@ -71,6 +72,14 @@ def get_update_tools(allowed_dir: Path | str | None = None) -> list:
         tool
         for tool in get_tools(allowed_dir)
         if tool["function"]["name"] in UPDATE_TOOL_NAMES
+    ]
+
+
+def get_update_location_tools(allowed_dir: Path | str | None = None) -> list:
+    return [
+        tool
+        for tool in get_tools(allowed_dir)
+        if tool["function"]["name"] in UPDATE_LOCATION_TOOL_NAMES
     ]
 
 
