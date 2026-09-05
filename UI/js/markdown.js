@@ -1,7 +1,7 @@
 if (typeof marked !== 'undefined') {
   marked.setOptions({
     gfm: true,
-    breaks: false,
+    breaks: true,
   });
 }
 

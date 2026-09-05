@@ -38,9 +38,15 @@ def _rows_for_ui(conn: sqlite3.Connection) -> list:
 
 def _rows_for_model(conn: sqlite3.Connection) -> list:
     rows = conn.execute(
-        "SELECT role, content FROM messages ORDER BY id ASC"
+        "SELECT role, content, reasoning FROM messages ORDER BY id ASC"
     ).fetchall()
-    return [{"role": role, "content": content} for role, content in rows]
+    result = []
+    for role, content, reasoning in rows:
+        item = {"role": role, "content": content}
+        if role == "assistant":
+            item["reasoning_content"] = reasoning or ""
+        result.append(item)
+    return result
 
 def _rows_for_history(
     conn: sqlite3.Connection,

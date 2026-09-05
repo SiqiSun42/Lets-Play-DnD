@@ -41,6 +41,26 @@ def clear_client():
     THINKING_ENABLED = None
     REASONING_EFFORT = None
 
+
+def _prepare_messages(messages: list, *, enable_thinking: bool) -> list:
+    prepared = []
+    for msg in messages:
+        item = dict(msg)
+        if item.get("role") == "assistant":
+            if enable_thinking:
+                reasoning = item.pop("reasoning_content", None)
+                if reasoning is None:
+                    reasoning = item.pop("reasoning", None)
+                else:
+                    item.pop("reasoning", None)
+                item["reasoning_content"] = reasoning or ""
+            else:
+                item.pop("reasoning_content", None)
+                item.pop("reasoning", None)
+        prepared.append(item)
+    return prepared
+
+
 def call_model(
         messages: list, 
         *,
@@ -70,23 +90,23 @@ def call_model(
         raise RuntimeError("api key unavailable")
     if model is None:
         model = MODEL
-    
-    requset_params = {
-        "model": model,
-        "messages": messages
-    }
-
-    if tools:
-        requset_params["tools"] = tools
-        requset_params["tool_choice"] = tool_choice
 
     if enable_thinking is None:
         enable_thinking = THINKING_ENABLED
     if reasoning_effort is None:
         reasoning_effort = REASONING_EFFORT
 
-    if tool_choice == "required":
+    if tools or tool_choice == "required":
         enable_thinking = False
+
+    requset_params = {
+        "model": model,
+        "messages": _prepare_messages(messages, enable_thinking=enable_thinking),
+    }
+
+    if tools:
+        requset_params["tools"] = tools
+        requset_params["tool_choice"] = tool_choice
 
     if enable_thinking:
         requset_params["extra_body"] = {"thinking": {"type": "enabled"}}
@@ -111,7 +131,11 @@ def call_model_stream(messages: list, *, model: str = None, enable_thinking: boo
     if reasoning_effort is None:
         reasoning_effort = REASONING_EFFORT
 
-    params = {"model": model, "messages": messages, "stream": True}
+    params = {
+        "model": model,
+        "messages": _prepare_messages(messages, enable_thinking=enable_thinking),
+        "stream": True,
+    }
     if enable_thinking:
         params["extra_body"] = {"thinking": {"type": "enabled"}}
         params["reasoning_effort"] = reasoning_effort

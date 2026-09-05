@@ -383,7 +383,11 @@ def _build_update_messages(
     messages.extend(history_msgs)
     messages.append({"role": "system", "content": UPDATE_ZH_PROMPT})
     messages.append({"role": "user", "content": user_text})
-    messages.append({"role": "assistant", "content": content})
+    messages.append({
+        "role": "assistant",
+        "content": content,
+        "reasoning_content": "",
+    })
     messages.extend(game_data)
     messages.append({"role": "system", "content": panel_dir})
     return messages
@@ -406,6 +410,7 @@ def update_panel(
     result = call_model(
         messages,
         tools=update_tools,
+        enable_thinking=False,
     )
     msg = result["message"]
     if not msg.tool_calls:
@@ -489,7 +494,13 @@ def run_game_zh(username: str, save_id: str, text: str):
     )
 
     update_panel(
-        history_msgs, user_text, content, game_data, panel_dir, username, save_id
+        history_msgs,
+        user_text,
+        content,
+        game_data,
+        panel_dir,
+        username,
+        save_id,
     )
 
     yield {"type": "done", "content": content, "thinking": thinking}
