@@ -122,6 +122,8 @@ def classify(
     result = call_model(
         messages,
         tools=classify_tool_zh,
+        tool_choice="required",
+        enable_thinking=False,
     )
     msg = result["message"]
 
@@ -502,7 +504,10 @@ def _append_location_panel_msg(
     else:
         messages.append({
             "role": "system",
-            "content": "该地点尚未创建，需要新建同名地点",
+            "content": (
+                f"地点「{location_name}」尚未创建，需要新建同名地点并更新map.json"
+                f"（路径：world/{location_name}.md）。"
+            ),
         })
 
 
@@ -579,6 +584,26 @@ def _build_update_location_messages(
         "content": content,
         "reasoning_content": "",
     })
+    if new_location_name:
+        if _location_file_exists(username, save_id, new_location_name):
+            messages.append({
+                "role": "system",
+                "content": f"本回合到达地点「{new_location_name}」（已有文档）。",
+            })
+        else:
+            messages.append({
+                "role": "system",
+                "content": (
+                    f"本回合到达新地点「{new_location_name}」，"
+                    f"目录中尚无 world/{new_location_name}.md；"
+                    "必须用 write_file 创建该文档，并用 edit_file 将其挂入 world/map.json。"
+                ),
+            })
+    elif current_location_name:
+        messages.append({
+            "role": "system",
+            "content": f"本回合仍在地点「{current_location_name}」，按正文更新已有地点信息。",
+        })
     _append_location_panel_msg(messages, username, save_id, current_location_name)
     if (
         new_location_name
