@@ -12,7 +12,7 @@ PDF_FILENAMES = ["玩家手册.pdf", "怪物图鉴.pdf", "城主指南.pdf"]
 PDF_PATHS = [os.path.join(PDF_DIR, f) for f in PDF_FILENAMES]
 VECTOR_DB_PATH = os.path.join(os.path.dirname(__file__), "vector_db")
 # 参数
-BATCH_SIZE = 5000 # 英文版向量化有7270块，超过Chroma的默认batch 5461；中文版是3081，其实不需要
+BATCH_SIZE = 5000 # 英文版向量化有7270块，超过Chroma的默认batch 5461；中文版是2589，其实不需要
 MAX_CHUNK_SIZE = 700
 CHUNK_OVERLAP = 200  # 相邻 chunk 重叠字数；下一步起点 = 当前起点 + (MAX_CHUNK_SIZE - CHUNK_OVERLAP)
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-zh-v1.5" # 中文版: BAAI/bge-small-zh-v1.5；英文版: BAAI/bge-small-en-v1.5
@@ -39,33 +39,36 @@ def _is_cjk(ch: str) -> bool:
         or 0xFF00 <= code <= 0xFFEF
     )
 
-
 def clean_pdf_text(text):
-    text = re.sub(r"(\w)-\n(?!\n)(\w)", r"\1\2", text)
-
+    """处理PDF文本（用缩进识别段落开头）"""
+    lines = text.split('\n')
     paragraphs = []
-    current = ""
-
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if not stripped:
-            if current:
-                paragraphs.append(current)
-                current = ""
-            continue
-
-        if not current:
-            current = stripped
-        elif _is_cjk(current[-1]) and _is_cjk(stripped[0]):
-            current += stripped
+    current_para = ""
+    
+    for line in lines:
+        # 判断是否是段落开头：前两个字符都是空格
+        is_para_start = len(line) >= 2 and line[0] == ' ' and line[1] == ' '
+        
+        if is_para_start:
+            # 当前段落结束
+            if current_para:
+                paragraphs.append(current_para)
+            # 新段落开始
+            current_para = line.strip()
         else:
-            current += " " + stripped
-
-    if current:
-        paragraphs.append(current)
-
-    return "\n\n".join(paragraphs)
-
+            # 继续当前段落
+            if current_para:
+                # 去掉段尾的换行，合并
+                current_para += line.strip()
+            else:
+                current_para = line.strip()
+    
+    # 最后一个段落
+    if current_para:
+        paragraphs.append(current_para)
+    
+    # 用\n\n连接，这样就能和其他书统一格式
+    return '\n\n'.join(paragraphs)
 
 def split_long_with_overlap(text, max_chunk_size, overlap):
     """超长文本滑动窗口切分。例如 size=700、overlap=200 时，块起点为 0, 500, 1000, ..."""
@@ -92,7 +95,7 @@ def split_long_with_overlap(text, max_chunk_size, overlap):
 
 def split_text(text, max_chunk_size=500, overlap=CHUNK_OVERLAP):
     """按照自然段落分割文本, 并合并短块, 切割长块, 确保每块的大小约等于max_chunk_size个字符。
-    超长段落按 overlap 做滑动窗口叠加，减轻硬切丢上下文（城主指南这类无\\n\\n文本尤其需要）。"""
+    超长段落按 overlap 做滑动窗口叠加，减轻硬切丢上下文"""
     raw_paragraphs = text.split("\n\n")
     chunks = []
     current_chunk = ""
@@ -119,8 +122,6 @@ def split_text(text, max_chunk_size=500, overlap=CHUNK_OVERLAP):
     if current_chunk:
         chunks.append(current_chunk.strip())
     return chunks
-
-SKIP_CLEAN_FILENAMES = {"城主指南.pdf"}
 
 
 def report_text_stats(text, max_chunk_size=MAX_CHUNK_SIZE, title="文本结构统计"):
@@ -165,22 +166,30 @@ def report_text_stats(text, max_chunk_size=MAX_CHUNK_SIZE, title="文本结构�
         print(f"会被硬切的超长段落数: {hard_cut}")
     print("=" * 50)
 
+def save_text_to_file(text, filepath):
+    """保存文本到文件"""
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(text)
+    print(f"已保存到: {filepath}")
+
 
 def main():
     parts = []
     for path in PDF_PATHS:
         filename = os.path.basename(path)
         file_text = load_pdf(path)
-        if filename in SKIP_CLEAN_FILENAMES:
-            print(f"[跳过 clean] {filename}")
-        else:
-            print(f"[应用 clean] {filename}")
-            file_text = clean_pdf_text(file_text)
+        #save_text_to_file(file_text, f"{PDF_DIR}/{filename}_raw.txt")
+
+        print(f"预处理文本: {filename}")
+        file_text = clean_pdf_text(file_text)
+        #save_text_to_file(file_text, f"{PDF_DIR}/{filename}_clean.txt")
+        
         report_text_stats(
             file_text,
             MAX_CHUNK_SIZE,
             title=f"单本统计: {filename}",
         )
+        
         parts.append(file_text)
 
     text = "\n\n".join(parts)
@@ -214,7 +223,7 @@ def main():
             ids=[str(i) for i in range(start, end)],
         )
         print(f"已写入 {end}/{total}")
-
+    
 
 if __name__ == "__main__":
     main()

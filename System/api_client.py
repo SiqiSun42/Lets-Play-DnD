@@ -61,6 +61,20 @@ def _prepare_messages(messages: list, *, enable_thinking: bool) -> list:
     return prepared
 
 
+def _normalize_usage(usage) -> dict:
+    if usage is None:
+        return {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+    return {
+        "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+        "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+    }
+
+
 def call_model(
         messages: list, 
         *,
@@ -116,9 +130,20 @@ def call_model(
 
     reasoning = getattr(message, "reasoning_content", None)
 
-    return {"message": message, "reasoning": reasoning}
+    return {
+        "message": message,
+        "reasoning": reasoning,
+        "usage": _normalize_usage(getattr(response, "usage", None)),
+    }
 
-def call_model_stream(messages: list, *, model: str = None, enable_thinking: bool = None, reasoning_effort: str = None):
+def call_model_stream(
+        messages: list,
+        *,
+        model: str = None,
+        enable_thinking: bool = None,
+        reasoning_effort: str = None,
+        include_usage: bool = False,
+):
     if _client is None or MODEL is None:
         raise RuntimeError("api key unavailable")
     if model is None:
@@ -133,6 +158,8 @@ def call_model_stream(messages: list, *, model: str = None, enable_thinking: boo
         "messages": _prepare_messages(messages, enable_thinking=enable_thinking),
         "stream": True,
     }
+    if include_usage:
+        params["stream_options"] = {"include_usage": True}
     if enable_thinking:
         params["extra_body"] = {"thinking": {"type": "enabled"}}
         params["reasoning_effort"] = reasoning_effort
@@ -141,6 +168,9 @@ def call_model_stream(messages: list, *, model: str = None, enable_thinking: boo
 
     stream = _client.chat.completions.create(**params)
     for chunk in stream:
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            yield {"type": "usage", "usage": _normalize_usage(usage)}
         delta = chunk.choices[0].delta if chunk.choices else None
         if not delta:
             continue

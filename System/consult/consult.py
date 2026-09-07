@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from System import call_model, call_model_stream
@@ -214,6 +215,10 @@ def clear_chat(username: str) -> None:
     path.unlink(missing_ok=True)
 
 def run_stream(username: str, language: str, text: str):
+    started_at = time.perf_counter()
+    usage1 = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    usage2 = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
     # 1. 获取历史消息, 如果没有则返回开场白
     history = _history_for_model(username, language)
     history_msgs = [{"role": m["role"], "content": m["content"]} for m in history]
@@ -240,6 +245,7 @@ def run_stream(username: str, language: str, text: str):
     # 5. 第一个api的决策信息返回。大部分情况下使用工具，不展示给用户（因此不使用流式）
     result1 = call_model(decision_messages, tools=tools)
     msg1 = result1["message"]
+    usage1 = result1.get("usage") or usage1
 
     full_thinking = []
     full_content = []
@@ -267,13 +273,15 @@ def run_stream(username: str, language: str, text: str):
         })
 
         # 6.3 第二个api的流式
-        for ev in call_model_stream(output_messages):
+        for ev in call_model_stream(output_messages, include_usage=True):
             if ev["type"] == "thinking":
                 full_thinking.append(ev["delta"])
                 yield ev
             elif ev["type"] == "content":
                 full_content.append(ev["delta"])
                 yield ev
+            elif ev["type"] == "usage":
+                usage2 = ev.get("usage") or usage2
 
     # 7. 第一个api的决策信息返回后，如果没有工具调用，说明没有使用RAG，直接返回即可
     else:
@@ -300,5 +308,30 @@ def run_stream(username: str, language: str, text: str):
         reasoning=thinking if thinking else None,
     )
 
+    elapsed = time.perf_counter() - started_at
+    prompt_tokens = usage1["prompt_tokens"] + usage2["prompt_tokens"]
+    completion_tokens = (
+        usage1["completion_tokens"] + usage2["completion_tokens"]
+    )
+    total_tokens = usage1["total_tokens"] + usage2["total_tokens"]
+    print(
+        f"[consult] username={username} elapsed={elapsed:.2f}s "
+        f"prompt_tokens={prompt_tokens} "
+        f"completion_tokens={completion_tokens} "
+        f"total_tokens={total_tokens} "
+        f"api1_tokens={usage1['total_tokens']} "
+        f"api2_tokens={usage2['total_tokens']}",
+        flush=True,
+    )
+
     # 9. 一次调用结束，返回最终内容和思考过程
     yield {"type": "done", "content": content, "thinking": thinking}
+
+
+"""
+参考数据，分别为一次DnD RAG查询的完整流程和不相干的问题：
+
+[consult] username=admin elapsed=10.34s prompt_tokens=5749 completion_tokens=1156 total_tokens=6905 api1_tokens=2015 api2_tokens=4890
+
+[consult] username=admin elapsed=2.98s prompt_tokens=2437 completion_tokens=259 total_tokens=2696 api1_tokens=2696 api2_tokens=0
+"""
