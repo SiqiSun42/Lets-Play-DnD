@@ -18,3 +18,18 @@ from .mcp.mcp_tools import (
     get_update_location_tools,
     execute_tool as execute_mcp_tool,
 )
+from .battle_zh import (
+    battle_init_tool as battle_init_tool_zh,
+    state_init_tool as state_init_tool_zh,
+    state_init_note_tool as state_init_note_tool_zh,
+    dm_note_tool as battle_dm_note_tool_zh,
+    action_tool as battle_action_tool_zh,
+    action_check_tool as battle_action_check_tool_zh,
+    action_check_tool_v2 as battle_action_check_tool_v2_zh,
+    battle_update_tool as battle_update_tool_zh,
+    choose_action_tool as battle_choose_action_tool_zh,
+    ending_classify_tool as battle_ending_classify_tool_zh,
+    normalize_battle_ending as normalize_battle_ending_zh,
+    BATTLE_ENDING_CATEGORIES,
+    character_check_tool as battle_character_check_tool_zh,
+)

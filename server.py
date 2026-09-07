@@ -21,6 +21,44 @@ app.permanent_session_lifetime = timedelta(days=60)
 DB_PATH = ROOT / "account.db"
 AUTO_LOGIN_ADMIN = False
 USER_TEMPLATE_DIR = ROOT / "Templates" / "user"
+GAME_TEMPLATE_DIR = ROOT / "Templates" / "game"
+GAME_TEMPLATE_META = GAME_TEMPLATE_DIR / "meta.json"
+
+
+def load_game_templates() -> list:
+    if not GAME_TEMPLATE_META.is_file():
+        return []
+    data = json.loads(GAME_TEMPLATE_META.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        return []
+    result = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        tid = str(item.get("id") or "").strip()
+        if not tid or "/" in tid or "\\" in tid or tid in (".", ".."):
+            continue
+        result.append({
+            "id": tid,
+            "title": item.get("title") or tid,
+            "in_game_language": item.get("in_game_language") or "zh-CN",
+        })
+    return result
+
+
+def resolve_game_template_dir(template_id: str) -> Path | None:
+    tid = str(template_id or "").strip()
+    if not tid or "/" in tid or "\\" in tid or tid in (".", ".."):
+        return None
+    root = GAME_TEMPLATE_DIR.resolve()
+    path = (GAME_TEMPLATE_DIR / tid).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    if not path.is_dir():
+        return None
+    return path
 
 def init_account_dir(username, language="zh-CN"):
     account_dir = ROOT / "Account" / username
@@ -663,6 +701,69 @@ def duplicate_meta_save():
     )
     return jsonify({"ok": True, "data": data, "new": new_item})
 
+@app.get("/api/templates/game")
+def list_game_templates():
+    username = session.get("username")
+    if not username:
+        return jsonify({"error": "not logged in"}), 401
+    return jsonify({"templates": load_game_templates()})
+
+@app.post("/api/templates/game/create")
+def create_from_game_template():
+    username = session.get("username")
+    if not username:
+        return jsonify({"error": "not logged in"}), 401
+
+    body = request.get_json() or {}
+    template_id = (body.get("id") or "").strip()
+    if not template_id:
+        return jsonify({"error": "missing id"}), 400
+
+    templates = load_game_templates()
+    source = None
+    for item in templates:
+        if item.get("id") == template_id:
+            source = item
+            break
+    if source is None:
+        return jsonify({"error": "not found"}), 404
+
+    src_dir = resolve_game_template_dir(template_id)
+    if src_dir is None:
+        return jsonify({"error": "template missing"}), 404
+
+    path = ROOT / "Account" / username / "meta.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    language = source.get("in_game_language") or "zh-CN"
+    base_title = source.get("title") or template_id
+    created = datetime.now(timezone.utc)
+    new_id = created.strftime("game_%Y%m%d%H%M%S")
+    existing_ids = {item.get("id") for item in data}
+    while new_id in existing_ids:
+        created = created + timedelta(seconds=1)
+        new_id = created.strftime("game_%Y%m%d%H%M%S")
+
+    new_item = {
+        "id": new_id,
+        "title": base_title,
+        "in_game_language": language,
+        "last_played": created.isoformat(),
+        "pinned": False,
+    }
+
+    saves_root = ROOT / "Account" / username / "Saves"
+    dst_dir = saves_root / new_id
+    if dst_dir.exists():
+        return jsonify({"error": "target exists"}), 409
+    shutil.copytree(src_dir, dst_dir)
+    data.append(new_item)
+
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return jsonify({"ok": True, "data": data, "new": new_item})
+
 @app.post("/api/meta/delete")
 def delete_meta_save():
     username = session.get("username")
@@ -747,6 +848,10 @@ def game_message_stream():
         return jsonify({"error": "empty"}), 400
     if not save_id or save_id == "consult":
         return jsonify({"error": "invalid id"}), 400
+
+    from System.battle import is_save_soft_locked
+    if is_save_soft_locked(username, save_id):
+        return jsonify({"error": "soft_locked"}), 403
 
     api_key = get_user_api_key(username)
     if not api_key:
@@ -913,9 +1018,13 @@ def game_messages():
         return jsonify({"error": "invalid id"}), 400
 
     from System import load_game_for_ui
+    from System.battle import is_save_soft_locked
 
     messages = load_game_for_ui(username, save_id)
-    return jsonify({"messages": messages})
+    return jsonify({
+        "messages": messages,
+        "soft_locked": is_save_soft_locked(username, save_id),
+    })
 
 @app.get("/api/game/history")
 def game_history():

@@ -119,10 +119,15 @@ function chatInputHasText() {
 function syncChatSendEnabled() {
   const sessionType = window.activeSession?.type;
   const allowSend = sessionType === 'consult' || sessionType === 'save';
+  const softLocked = sessionType === 'save' && !!window.activeSession?.softLocked;
   const sendBtn = document.getElementById('btn-chat-send');
-  if (sendBtn) sendBtn.disabled = !allowSend || chatSendBusy || !chatInputHasText();
+  if (sendBtn) {
+    sendBtn.disabled = !allowSend || softLocked || chatSendBusy || !chatInputHasText();
+  }
   const input = document.querySelector('#view-body .chat-input');
-  if (input) input.readOnly = !allowSend;
+  if (input) {
+    input.readOnly = !allowSend || softLocked;
+  }
 }
 
 function ensureChatShell() {
@@ -584,6 +589,7 @@ async function sendChatMessage() {
   const sessionType = window.activeSession?.type;
   if (sessionType !== 'consult' && sessionType !== 'save') return;
   if (sessionType === 'save' && !window.activeSession?.id) return;
+  if (sessionType === 'save' && window.activeSession?.softLocked) return;
   const text = input.value.trim();
   if (!text) return;
 
@@ -598,6 +604,8 @@ async function sendChatMessage() {
   showThinkingIndicator('DM');
   let contentAcc = '';
   let thinkingAcc = '';
+  let streamDm = dm;
+  let bubbleClosed = false;
 
   const streamUrl = sessionType === 'consult'
     ? 'api/consult/message/stream'
@@ -605,6 +613,43 @@ async function sendChatMessage() {
   const streamBody = sessionType === 'consult'
     ? { text }
     : { text, id: window.activeSession.id };
+
+  function finalizeCurrentBubble(bubbleDm, finalText, thinkingText) {
+    if (!bubbleDm) return;
+    bubbleDm.ensureStreamUi();
+    const bodyText = finalText || '';
+    if (bodyText) {
+      bubbleDm.setContentVisible(true);
+      bubbleDm.contentEl.innerHTML = typeof renderMarkdown === 'function'
+        ? renderMarkdown(bodyText)
+        : bodyText;
+      bubbleDm.setCopyText(bodyText);
+    } else {
+      bubbleDm.setContentVisible(false);
+      bubbleDm.setCopyText('');
+    }
+    if (thinkingText) {
+      bubbleDm.reasoningBlock.hidden = false;
+      bubbleDm.reasoningTextEl.textContent = thinkingText;
+    }
+  }
+
+  function sealCurrentBubble() {
+    if (!bubbleClosed && streamDm && (contentAcc || thinkingAcc)) {
+      finalizeCurrentBubble(streamDm, contentAcc, thinkingAcc);
+    }
+    bubbleClosed = true;
+    contentAcc = '';
+    thinkingAcc = '';
+  }
+
+  function openBubbleForWrite() {
+    if (!bubbleClosed && streamDm) return;
+    streamDm = beginStreamingDmMessage();
+    bubbleClosed = false;
+    contentAcc = '';
+    thinkingAcc = '';
+  }
 
   try {
     const res = await fetch(streamUrl, {
@@ -636,35 +681,37 @@ async function sendChatMessage() {
         const ev = JSON.parse(payload);
 
         if (ev.type === 'thinking') {
-          dm.ensureStreamUi();
+          openBubbleForWrite();
+          streamDm.ensureStreamUi();
           thinkingAcc += ev.delta || '';
-          dm.reasoningBlock.hidden = false;
-          dm.reasoningTextEl.textContent = thinkingAcc;
+          streamDm.reasoningBlock.hidden = false;
+          streamDm.reasoningTextEl.textContent = thinkingAcc;
+          scrollChatToBottomIfNeeded();
+        } else if (ev.type === 'end_bubble' || ev.type === 'new_bubble') {
+          sealCurrentBubble();
           scrollChatToBottomIfNeeded();
         } else if (ev.type === 'content') {
-          dm.ensureStreamUi();
+          openBubbleForWrite();
+          streamDm.ensureStreamUi();
           contentAcc += ev.delta || '';
-          dm.setContentVisible(true);
-          dm.contentEl.innerHTML = typeof renderMarkdown === 'function'
+          streamDm.setContentVisible(true);
+          streamDm.contentEl.innerHTML = typeof renderMarkdown === 'function'
             ? renderMarkdown(contentAcc)
             : contentAcc;
           scrollChatToBottomIfNeeded();
         } else if (ev.type === 'done') {
-          dm.ensureStreamUi();
-          const finalText = ev.content || contentAcc;
-          if (finalText) {
-            dm.setContentVisible(true);
-            dm.contentEl.innerHTML = typeof renderMarkdown === 'function'
-              ? renderMarkdown(finalText)
-              : finalText;
-            dm.setCopyText(finalText);
-          } else {
-            dm.setContentVisible(false);
-            dm.setCopyText('');
+          if (!bubbleClosed) {
+            const finalText = ev.segmented
+              ? contentAcc
+              : (ev.content || contentAcc);
+            finalizeCurrentBubble(streamDm, finalText, ev.thinking || thinkingAcc);
+            bubbleClosed = true;
+            contentAcc = '';
+            thinkingAcc = '';
           }
-          if (ev.thinking || thinkingAcc) {
-            dm.reasoningBlock.hidden = false;
-            dm.reasoningTextEl.textContent = ev.thinking || thinkingAcc;
+          if (ev.soft_locked && window.activeSession?.type === 'save') {
+            window.activeSession.softLocked = true;
+            syncChatSendEnabled();
           }
           scrollChatToBottomIfNeeded();
         } else if (ev.type === 'error') {
@@ -796,7 +843,11 @@ async function loadGameMessages(saveId) {
   const res = await fetch('api/game/messages?id=' + encodeURIComponent(saveId));
   if (!res.ok) return;
   const data = await res.json();
+  if (window.activeSession?.type === 'save' && window.activeSession.id === saveId) {
+    window.activeSession.softLocked = !!data.soft_locked;
+  }
   renderChatMessages(data.messages || []);
+  syncChatSendEnabled();
 }
 
 function openClearConsultModal() {

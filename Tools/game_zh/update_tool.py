@@ -45,6 +45,13 @@ update_tool = [
                             "以及新建地点文档）。"
                         ),
                     },
+                    "is_battle": {
+                        "type": "boolean",
+                        "description": (
+                            "本回合结果是否可能触发战斗。"
+                            "true 表示有可能触发战斗"
+                        ),
+                    },
                 },
                 "required": [
                     "is_inventory_update",
@@ -74,6 +81,10 @@ def parse_update_plan(args: dict) -> dict:
     location_value = args.get("location")
     if location_value is not None:
         location_value = str(location_value).strip() or None
+    if "is_battle" in args and args.get("is_battle") is not None:
+        is_battle = normalize_update_bool(args.get("is_battle"))
+    else:
+        is_battle = False
     return {
         "time": time_value,
         "location": location_value,
@@ -81,4 +92,5 @@ def parse_update_plan(args: dict) -> dict:
         "is_status_update": normalize_update_bool(args.get("is_status_update")),
         "is_character_update": normalize_update_bool(args.get("is_character_update")),
         "is_location_update": normalize_update_bool(args.get("is_location_update")),
+        "is_battle": is_battle,
     }

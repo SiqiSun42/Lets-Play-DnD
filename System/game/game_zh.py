@@ -432,6 +432,7 @@ EMPTY_UPDATE_PLAN = {
     "is_status_update": False,
     "is_character_update": False,
     "is_location_update": False,
+    "is_battle": False,
 }
 
 
@@ -729,7 +730,7 @@ def _apply_panel_updates(
     panel_dir: str,
     username: str,
     save_id: str,
-) -> dict:
+) -> tuple[dict, list[str] | None]:
     plan = plan_panel_update(
         history_msgs,
         user_text,
@@ -773,14 +774,52 @@ def _apply_panel_updates(
             save_id,
             plan,
         )
-    return plan
+
+    if plan.get("is_battle"):
+        from System.battle import check_and_init_battle
+
+        started, parts = check_and_init_battle(username, save_id)
+        if started:
+            return plan, parts
+    return plan, None
 
 
 def run_game_zh(username: str, save_id: str, text: str):
+    from System.battle import (
+        load_battle_status,
+        sync_battle_runtime,
+        is_save_soft_locked,
+        iter_battle_continue_sse,
+    )
+
+    user_text = text.strip()
+
+    if is_save_soft_locked(username, save_id):
+        yield {
+            "type": "error",
+            "error": "soft_locked",
+            "content": "游戏已结束（团灭），无法继续发送。",
+        }
+        return
+
+    battle_status = load_battle_status(username, save_id) or {}
+    in_battle = bool(battle_status.get("is_battle"))
+    ending_phase = (battle_status.get("ending_phase") or "").strip()
+
+    if in_battle or ending_phase:
+        sync_battle_runtime(username, save_id)
+        if user_text and ending_phase != "character_check":
+            append_message(username, save_id, "user", user_text)
+        yield from iter_battle_continue_sse(
+            username,
+            save_id,
+            user_text=user_text if user_text else None,
+        )
+        return
+
     history = history_for_model(username, save_id)
     history_msgs = history[-20:]
 
-    user_text = text.strip()
     game_data = load_game_data(username, save_id)
     panel_dir = panel_dir_listing(username, save_id)
 
@@ -845,7 +884,7 @@ def run_game_zh(username: str, save_id: str, text: str):
         reasoning=thinking if thinking else None,
     )
 
-    _apply_panel_updates(
+    _plan, battle_parts = _apply_panel_updates(
         history_msgs,
         user_text,
         content,
@@ -854,5 +893,16 @@ def run_game_zh(username: str, save_id: str, text: str):
         username,
         save_id,
     )
+
+    yield {"type": "end_bubble"}
+
+    if battle_parts:
+        yield from iter_battle_continue_sse(
+            username,
+            save_id,
+            user_text=None,
+            start_parts=battle_parts,
+        )
+        return
 
     yield {"type": "done", "content": content, "thinking": thinking}
