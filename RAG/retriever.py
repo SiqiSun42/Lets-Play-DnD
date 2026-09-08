@@ -11,13 +11,13 @@ THRESHOLD = 0.5
 _LANG_CONFIG = {
     "zh": {
         "model": "BAAI/bge-small-zh-v1.5",
-        "rerank_model": "BAAI/bge-reranker-base",  # 新增
+        "rerank_model": "BAAI/bge-reranker-base",  
         "collection": "dnd_rules_zh",
         "empty": "未找到足够相关的规则。",
     },
     "en": {
         "model": "BAAI/bge-small-en-v1.5",
-        "rerank_model": "BAAI/bge-reranker-base",  # 英文也可用这个
+        "rerank_model": "BAAI/bge-reranker-base",  
         "collection": "dnd_rules_en",
         "empty": "No sufficiently relevant rules found.",
     },
@@ -81,7 +81,7 @@ def search_rules(query:str, language: str = "zh-CN", top_k: int = TOP_K, thresho
 
         documents = results.get("documents", [[]])[0]
 
-        # 4.Rerank排序
+        # 4.Rerank排序 
         rerank_model = _get_rerank_model(lang_key)
         rerank_scores = rerank_model.predict([[query, doc] for doc in documents])
 
