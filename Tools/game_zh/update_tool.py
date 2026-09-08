@@ -54,10 +54,13 @@ update_tool = [
                     },
                 },
                 "required": [
+                    "time",
+                    "location",
                     "is_inventory_update",
                     "is_status_update",
                     "is_character_update",
                     "is_location_update",
+                    "is_battle",
                 ],
             },
         },

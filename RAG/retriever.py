@@ -107,7 +107,7 @@ def search_rules(query:str, language: str = "zh-CN", top_k: int = TOP_K, thresho
         # 直接返回top_k即可
         filtered = []
         for doc, dist in zip(documents, distances):
-            similarity = 1 / (1 + dist)
+            similarity = 1 / (1 + dist) # 将 Chroma 返回的 L2 距离映射到 (0,1] 区间作为相似度分数。效果比余弦相似度好。
             if similarity >= threshold:
                 filtered.append(f"[距离分数: {similarity:.2f}]\n{doc}")
     if not filtered:

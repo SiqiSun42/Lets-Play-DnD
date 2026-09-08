@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 
-DB_DIR = ROOT / "Templates" / "game" / "template_20260905162815"
+DB_DIR = ROOT / "Templates" / "game" / "template_20260907220932"
 DB_NAME = "chat.db"
 DB_PATH = DB_DIR / DB_NAME
 

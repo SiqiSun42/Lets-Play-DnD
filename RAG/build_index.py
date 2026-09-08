@@ -8,7 +8,7 @@ import re
 PDF_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "DnD Rule Books")
 )
-PDF_FILENAMES = ["玩家手册.pdf", "怪物图鉴.pdf", "城主指南.pdf"]
+PDF_FILENAMES = ["玩家手册.pdf", "怪物图鉴.pdf", "城主指南.pdf"] # ["Players Handbook.pdf", "Monster Manual.pdf", "Dungeon Masters Guide.pdf"] 
 PDF_PATHS = [os.path.join(PDF_DIR, f) for f in PDF_FILENAMES]
 VECTOR_DB_PATH = os.path.join(os.path.dirname(__file__), "vector_db")
 # 参数
@@ -178,11 +178,11 @@ def main():
     for path in PDF_PATHS:
         filename = os.path.basename(path)
         file_text = load_pdf(path)
-        #save_text_to_file(file_text, f"{PDF_DIR}/{filename}_raw.txt")
+        save_text_to_file(file_text, f"{PDF_DIR}/{filename}_raw.txt")
 
         print(f"预处理文本: {filename}")
         file_text = clean_pdf_text(file_text)
-        #save_text_to_file(file_text, f"{PDF_DIR}/{filename}_clean.txt")
+        save_text_to_file(file_text, f"{PDF_DIR}/{filename}_clean.txt")
         
         report_text_stats(
             file_text,
@@ -195,7 +195,7 @@ def main():
     text = "\n\n".join(parts)
     report_text_stats(text, MAX_CHUNK_SIZE, title="三本拼接后统计")
 
-    # 2.分块（超长段带 CHUNK_OVERLAP 滑动重叠）
+    # 2.分块（超长段按 CHUNK_OVERLAP 滑动重叠）
     chunks = split_text(text, MAX_CHUNK_SIZE, overlap=CHUNK_OVERLAP)
 
     # 3. 加载模型
