@@ -83,19 +83,28 @@ def get_update_location_tools(allowed_dir: Path | str | None = None) -> list:
     ]
 
 
-def execute_tool(
-    tool_name: str,
-    arguments: dict,
+def _result_text(result) -> str:
+    if hasattr(result, "content") and result.content:
+        parts = []
+        for item in result.content:
+            text = getattr(item, "text", None)
+            if text:
+                parts.append(text)
+        if parts:
+            return "\n".join(parts)
+    return str(result)
+
+
+def execute_tools(
+    tool_calls: list[tuple[str, dict]],
     allowed_dir: Path | str | None = None,
-) -> str:
+) -> list[str]:
     if allowed_dir is None:
         allowed_dir = ROOT
     if _mcp_tools_for_api is None:
         asyncio.run(_load_tools(allowed_dir))
 
     known = {tool["function"]["name"] for tool in (_mcp_tools_for_api or [])}
-    if tool_name not in known:
-        return f"错误：未知工具 {tool_name}"
 
     async def _execute():
         server_command = _filesystem_server(allowed_dir)
@@ -106,15 +115,25 @@ def execute_tool(
         async with stdio_client(server_params) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
-                result = await session.call_tool(tool_name, arguments)
-                if hasattr(result, "content") and result.content:
-                    parts = []
-                    for item in result.content:
-                        text = getattr(item, "text", None)
-                        if text:
-                            parts.append(text)
-                    if parts:
-                        return "\n".join(parts)
-                return str(result)
+                results = []
+                for tool_name, arguments in tool_calls:
+                    if tool_name not in known:
+                        results.append(f"错误：未知工具 {tool_name}")
+                        continue
+                    result = await session.call_tool(tool_name, arguments)
+                    results.append(_result_text(result))
+                return results
 
     return asyncio.run(_execute())
+
+
+def execute_tool(
+    tool_name: str,
+    arguments: dict,
+    allowed_dir: Path | str | None = None,
+) -> str:
+    results = execute_tools(
+        [(tool_name, arguments)],
+        allowed_dir=allowed_dir,
+    )
+    return results[0]

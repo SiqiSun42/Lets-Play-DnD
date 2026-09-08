@@ -22,7 +22,7 @@ from Tools import (
     battle_character_check_tool_zh,
     dice_tool_zh,
     get_update_tools,
-    execute_mcp_tool,
+    execute_mcp_tools,
 )
 from .battle_zh import (
     load_battle_status,
@@ -534,10 +534,13 @@ def run_update_ending(username: str, save_id: str) -> dict:
     )
     msg = result["message"]
     tool_calls = getattr(msg, "tool_calls", None) or []
+    mcp_calls = []
     for tc in tool_calls:
         if tc.function.name == "edit_file":
             args = json.loads(tc.function.arguments)
-            execute_mcp_tool("edit_file", args, allowed_dir=data_root)
+            mcp_calls.append(("edit_file", args))
+    if mcp_calls:
+        execute_mcp_tools(mcp_calls, allowed_dir=data_root)
 
     reset_battle_status(username, save_id)
     return {

@@ -44,7 +44,7 @@ from Tools import (
     parse_update_plan_zh,
     get_update_tools,
     get_update_location_tools,
-    execute_mcp_tool,
+    execute_mcp_tools,
 )
 
 CLASSIFY_ERROR = "抱歉，系统未能识别本回合行动类型，请重新输入。"
@@ -675,12 +675,15 @@ def update_inventory_status(
     if not msg.tool_calls:
         return
     allowed_names = {tool["function"]["name"] for tool in update_tools}
+    mcp_calls = []
     for tool_call in msg.tool_calls:
         name = tool_call.function.name
         if name not in allowed_names:
             continue
         args = json.loads(tool_call.function.arguments)
-        execute_mcp_tool(name, args, allowed_dir=data_root)
+        mcp_calls.append((name, args))
+    if mcp_calls:
+        execute_mcp_tools(mcp_calls, allowed_dir=data_root)
 
 
 def update_location(
@@ -714,12 +717,15 @@ def update_location(
     if not msg.tool_calls:
         return
     allowed_names = {tool["function"]["name"] for tool in update_tools}
+    mcp_calls = []
     for tool_call in msg.tool_calls:
         name = tool_call.function.name
         if name not in allowed_names:
             continue
         args = json.loads(tool_call.function.arguments)
-        execute_mcp_tool(name, args, allowed_dir=data_root)
+        mcp_calls.append((name, args))
+    if mcp_calls:
+        execute_mcp_tools(mcp_calls, allowed_dir=data_root)
 
 
 def _apply_panel_updates(

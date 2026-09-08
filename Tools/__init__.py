@@ -17,6 +17,7 @@ from .mcp.mcp_tools import (
     get_update_tools,
     get_update_location_tools,
     execute_tool as execute_mcp_tool,
+    execute_tools as execute_mcp_tools,
 )
 from .battle_zh import (
     battle_init_tool as battle_init_tool_zh,
