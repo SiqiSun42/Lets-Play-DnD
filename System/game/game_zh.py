@@ -348,14 +348,14 @@ def _parse_narrate_tools(msg, *, require_calculation: bool) -> dict | None:
         if formula:
             calc_lines.append(f"> {formula}")
         if step_result:
-            calc_lines.append(f"结果：{step_result}")
+            calc_lines.append(f"> 结果：{step_result}")
     if calc_lines:
         sections.append("\n".join(calc_lines))
 
     sections.append(endings[0])
     for note in notes:
         sections.append(f"> {note}")
-    return {"content": "\n".join(sections)}
+    return {"content": "\n\n".join(sections)}
 
 
 def _resolve_tool_or_content(msg, *, require_calculation: bool) -> dict | None:
