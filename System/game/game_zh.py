@@ -348,7 +348,7 @@ def _parse_narrate_tools(msg, *, require_calculation: bool) -> dict | None:
         if formula:
             calc_lines.append(f"> {formula}")
         if step_result:
-            calc_lines.append(f"> 结果：{step_result}")
+            calc_lines.append(f"结果：{step_result}")
     if calc_lines:
         sections.append("\n".join(calc_lines))
 
