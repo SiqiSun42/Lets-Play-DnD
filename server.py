@@ -9,14 +9,17 @@ import secrets
 import re
 import resend
 from dotenv import load_dotenv
+# 用户自己的模型 API Key 之后还要调用供应商接口，使Fernet加密保存
 from cryptography.fernet import Fernet, InvalidToken
 from datetime import datetime, timezone, timedelta
+# 注册和修改密码时使用 Werkzeug 的 generate_password_hash, 登录时通过 check_password_hash 验证
 from werkzeug.security import generate_password_hash, check_password_hash
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 app = Flask(__name__)
 app.secret_key = os.environ["FLASK_SECRET_KEY"]
+# 浏览器通过签名Cookie自动带回，后续接口从 session.get("username") 判断身份。勾选“记住登录”时session最长保留60天
 app.permanent_session_lifetime = timedelta(days=60)
 DB_PATH = ROOT / "account.db"
 AUTO_LOGIN_ADMIN = False
