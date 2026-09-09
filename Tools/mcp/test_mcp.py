@@ -6,7 +6,7 @@ sys.path.insert(0, str(ROOT))
 
 from Tools.mcp.mcp_tools import get_tools, execute_tool
 
-TEST_DATA = ROOT / "Account" / "admin" / "Saves" / "game_20260822170205" / "data"
+TEST_DATA = ROOT / "Account" / "admin" / "Saves" / "game_20260907220932" / "data"
 
 print("正在连接 MCP 服务器...")
 tools = get_tools(TEST_DATA)
