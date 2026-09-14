@@ -37,6 +37,7 @@ BATTLE_ALL_DEAD_ZH_PROMPT = _read_prompt('battle_zh/8.1 all_dead.md')
 BATTLE_CHARACTER_CHECK_ZH_PROMPT = _read_prompt('battle_zh/9.1 character_check.md')
 BATTLE_LOOT_ZH_PROMPT = _read_prompt('battle_zh/9.2 loot.md')
 BATTLE_UPDATE_ENDING_ZH_PROMPT = _read_prompt('battle_zh/10. update_ending.md')
+SKILL_PROMPT_ZH = _read_prompt('consult/skills-zh.md')
 
 # 英文提示词
 DECISION_EN_PROMPT = _read_prompt('consult/decision-en.md')

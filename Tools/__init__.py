@@ -34,3 +34,4 @@ from .battle_zh import (
     BATTLE_ENDING_CATEGORIES,
     character_check_tool as battle_character_check_tool_zh,
 )
+from .skills.skills_tools import skill_tools as skills_tools_zh

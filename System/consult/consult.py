@@ -4,13 +4,15 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from System import call_model, call_model_stream
+from System.skills import load_skills_meta, load_skill
 from Prompts import (
     DECISION_ZH_PROMPT,
     OUTPUT_ZH_PROMPT,
     DECISION_EN_PROMPT,
     OUTPUT_EN_PROMPT,
+    SKILL_PROMPT_ZH,
 )
-from Tools import rag_tools_zh, rag_tools_en
+from Tools import rag_tools_zh, rag_tools_en, skills_tools_zh
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -214,6 +216,7 @@ def clear_chat(username: str) -> None:
     path = consult_db_path(username)
     path.unlink(missing_ok=True)
 
+
 def run_stream(username: str, language: str, text: str):
     started_at = time.perf_counter()
     usage1 = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -327,11 +330,143 @@ def run_stream(username: str, language: str, text: str):
     # 9. 一次调用结束，返回最终内容和思考过程
     yield {"type": "done", "content": content, "thinking": thinking}
 
+"""
+def run_stream(username: str, language: str, text: str):
+    # skills测试
+    started_at = time.perf_counter()
+    usage1 = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    usage2 = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    usage3 = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    # 1. 获取历史消息, 如果没有则返回开场白
+    history = _history_for_model(username, language)
+    history_msgs = [{"role": m["role"], "content": m["content"]} for m in history]
+
+    # 2. 确定语言和提示词
+    is_en = (language or "zh-CN").lower().startswith("en")
+    decision_prompt = SKILL_PROMPT_ZH
+    output_prompt = OUTPUT_ZH_PROMPT
+
+    # 3. 检索返回后的前缀提示
+    retrieved_prefix = (
+        "以下是从规则书中检索到的相关内容：\n\n"
+    )
+
+    skills_messages = load_skills_meta(["rag-query"])
+
+    # 4. 第一个api的决策信息构建
+    decision_messages = []
+    decision_messages.extend(history_msgs[-20:])
+    decision_messages.append({"role": "system", "content": decision_prompt})
+    decision_messages.extend(skills_messages)
+    decision_messages.append({"role": "user", "content": text})
+
+    # 5. 第一个api的决策信息返回。大部分情况下使用工具，不展示给用户（因此不使用流式）
+    result1 = call_model(decision_messages, tools=skills_tools_zh)
+    msg1 = result1["message"]
+    usage1 = result1.get("usage") or usage1
+
+    full_thinking = []
+    full_content = []
+
+    # 6. 第一个api的决策信息返回后，如果有工具调用，说明调用了skills，加载skills，进行检索
+    if msg1.tool_calls:
+        query_messages = []
+        query_messages.extend(history_msgs[-20:])
+        for tool_call in msg1.tool_calls:
+            args = json.loads(tool_call.function.arguments)
+            skill = args["skill_name"]
+            skill_content = load_skill(skill)
+            query_messages.append({"role": "system", "content": skill_content})
+        query_messages.append({"role": "user", "content": text})
+
+        result2 = call_model(query_messages, tools=rag_tools_zh)
+        msg2 = result2["message"]
+        usage2 = result2.get("usage") or usage2
+        
+        from RAG import search_rules # 导入有点慢，放这里，开场白时不用导入
+        retrieved_parts = []
+        # 6.1 可能有多次查询
+        for tool_call in msg2.tool_calls:
+            args = json.loads(tool_call.function.arguments)
+            query = args["query"]
+            context_label = args.get("context_label") or ""
+            retrieved_text = search_rules(query, language=language)
+            retrieved_parts.append(f"[{context_label}]\n{retrieved_text}")
+
+        # 6.2 第二个api的信息列表，包括历史信息、提示词、用户输入和返回的结果
+        output_messages = []
+        output_messages.extend(history_msgs[-20:])
+        output_messages.append({"role": "system", "content": output_prompt})
+        output_messages.append({"role": "user", "content": text})
+        output_messages.append({
+            "role": "system",
+            "content": retrieved_prefix + "\n\n---\n\n".join(retrieved_parts),
+        })
+
+        # 6.3 第二个api的流式
+        for ev in call_model_stream(output_messages, include_usage=True):
+            if ev["type"] == "thinking":
+                full_thinking.append(ev["delta"])
+                yield ev
+            elif ev["type"] == "content":
+                full_content.append(ev["delta"])
+                yield ev
+            elif ev["type"] == "usage":
+                usage3 = ev.get("usage") or usage3
+
+    # 7. 第一个api的决策信息返回后，如果没有工具调用，说明没有使用RAG，直接返回即可
+    else:
+        content = msg1.content or ""
+        reasoning = result1.get("reasoning") or ""
+        if reasoning:
+            full_thinking.append(reasoning)
+            yield {"type": "thinking", "delta": reasoning}
+        if content:
+            full_content.append(content)
+            yield {"type": "content", "delta": content}
+
+    content = "".join(full_content)
+    thinking = "".join(full_thinking)
+
+    # 8. 保存消息到数据库。如果是第一条消息，则也保存开场白
+    if not consult_db_path(username).is_file():
+        append_message(username, "assistant", opening_text(language))
+    append_message(username, "user", text)
+    append_message(
+        username,
+        "assistant",
+        content,
+        reasoning=thinking if thinking else None,
+    )
+
+    elapsed = time.perf_counter() - started_at
+    prompt_tokens = usage1["prompt_tokens"] + usage2["prompt_tokens"] + usage3["prompt_tokens"]
+    completion_tokens = (
+        usage1["completion_tokens"] + usage2["completion_tokens"] + usage3["completion_tokens"]
+    )
+    total_tokens = usage1["total_tokens"] + usage2["total_tokens"] + usage3["total_tokens"]
+    print(
+        f"[consult] username={username} elapsed={elapsed:.2f}s "
+        f"prompt_tokens={prompt_tokens} "
+        f"completion_tokens={completion_tokens} "
+        f"total_tokens={total_tokens} "
+        f"api1_tokens={usage1['total_tokens']} "
+        f"api2_tokens={usage2['total_tokens']}",
+        f"api3_tokens={usage3['total_tokens']}",
+        flush=True,
+    )
+
+    # 9. 一次调用结束，返回最终内容和思考过程
+    yield {"type": "done", "content": content, "thinking": thinking}
+"""
 
 """
-参考数据，分别为一次DnD RAG查询的完整流程和不相干的问题：
+参考数据，分别为一次DnD RAG查询的完整流程和不相干的问题，还有是否使用skills的对比：
 
-[consult] username=admin elapsed=10.34s prompt_tokens=5749 completion_tokens=1156 total_tokens=6905 api1_tokens=2015 api2_tokens=4890
+[consult] username=admin elapsed=12.78s prompt_tokens=4184 completion_tokens=2024 total_tokens=6208 api1_tokens=1380 api2_tokens=4828
 
 [consult] username=admin elapsed=2.98s prompt_tokens=2437 completion_tokens=259 total_tokens=2696 api1_tokens=2696 api2_tokens=0
+
+[consult] username=admin elapsed=17.17s prompt_tokens=5794 completion_tokens=2842 total_tokens=8636 api1_tokens=681 api2_tokens=1242 api3_tokens=6713
 """
