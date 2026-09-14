@@ -18,6 +18,7 @@ from .game import (
     panel_dir_listing,
     ROOT,
 )
+from .double_check import double_check
 from Dice import roll_dice
 from Prompts import (
     CLASSIFY_ZH_PROMPT,
@@ -518,7 +519,7 @@ def _should_update_location(plan: dict, username: str, save_id: str) -> bool:
     location = plan.get("location")
     if location and not _location_file_exists(username, save_id, location):
         return True
-    return False
+    return True # 这里暂时强制执行True，看看效果
 
 
 def _load_allies_panel_msgs(username: str, save_id: str, kind: str) -> list:
@@ -611,10 +612,12 @@ def _build_update_location_messages(
         and new_location_name != current_location_name
     ):
         _append_location_panel_msg(messages, username, save_id, new_location_name)
+    
     map_json = read_panel_json(username, save_id, "world/map.json")
     if map_json:
         messages.append({"role": "system", "content": map_json})
     messages.append({"role": "system", "content": panel_dir})
+    
     return messages
 
 
@@ -711,7 +714,7 @@ def update_location(
     result = call_model(
         messages,
         tools=update_tools,
-        enable_thinking=False,
+        enable_thinking=True,
     )
     msg = result["message"]
     if not msg.tool_calls:
@@ -726,6 +729,9 @@ def update_location(
         mcp_calls.append((name, args))
     if mcp_calls:
         execute_mcp_tools(mcp_calls, allowed_dir=data_root)
+
+    if not _location_file_exists(username, save_id, new_location_name):
+        double_check(username, save_id)
 
 
 def _apply_panel_updates(
