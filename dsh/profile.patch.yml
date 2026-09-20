@@ -19,10 +19,16 @@
 # 提供。因此在 profile patch 里再写一遍 disabled: true 是 no-op。
 #
 # 真正的工具面定义在 dsh/agent-presets/letsplaydnd/agent.cordis.yml。
-# 本行只负责把那个目录挂进 roster 并设为部署默认。
+# 本行只负责把那个目录挂进 roster。
+#
+# ⚠️ `default` 必须显式给一个存在的 preset id，**不能省略**——省略会让 DSH
+#    直接无法启动。这里用 `standard`（部署中性值），**不要设成 letsplaydnd**：
+#    default 影响所有新建会话，包括开发用的 GUI 会话，把它们降到极简面会
+#    失去 shell 等工具。极简 preset 由 P3.5 的适配层在创建游戏/咨询会话时
+#    用 `agentPreset.select` 显式选择。
 - id: agent-presets
   config:
-    default: letsplaydnd
+    default: standard
     roots:
       - path: !!js process.env.DSH_PRESET_DIR ?? '/opt/letsplaydnd/dsh/agent-presets'
         trust: system

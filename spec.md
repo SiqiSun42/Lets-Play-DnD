@@ -387,7 +387,7 @@ dsh/
 | MCP 工具 | ⏳ 需带 `--patch` 重启后验证 |
 | 沙箱 `workspace-write` | ⏳ 同上 |
 
-#### ⚠️ 三个实现坑（都已踩过）
+#### ⚠️ 五个实现坑（都已踩过）
 
 1. **工具面由 agent preset 决定，不是 profile patch。**
    web 组合把 host 平面的工具行**全部禁用**，改由 preset 提供。因此在 patch 里写 `disabled: true` 是 no-op——第一版 patch 就犯了这错。真正要改的是 `agent.cordis.yml`。
@@ -402,7 +402,20 @@ dsh/
    dsh plugin --profile <name> add '@deepseek-ai/dsh-mcp-client@0.1.5-rc.2'
    ```
 
+4. **⚠️ 会话运行期间不要改 profile patch。**
+   profile 是 `patchReload: live`，编辑它会触发实时重组；**重组会脱挂正在运行会话的 agent 平面**——host 平面的注册（MCP 工具等）还在，agent 平面的工具（`read` / `write` / `bash`）全部消失，会话随即不可用。改完必须重启 DSH。
+   （实测复现两次：编辑 patch → 工具全部 `unknown tool`，而 MCP 工具仍可调用。）
+
+5. **⚠️ roster 的 `default` 不能省略。**
+   把 `agent-presets` 的 `default` 去掉会让 DSH **直接无法启动**。该字段必须给一个存在的 preset id。
+
 **注意**：bundle 变更**需要重启** DSH。
+
+#### `default` 的取值
+
+`default` 决定**所有新建会话**的 preset，包括用来开发的 GUI 会话。因此**不要**把它设成本项目的极简 preset——那会波及开发会话，让它们失去 shell 等工具。
+
+极简 preset 由 **P3.5 的适配层在创建游戏/咨询会话时显式选择**（`agentPreset.select`），部署默认仍是 `standard`。
 
 #### 上下文压缩不能省
 
