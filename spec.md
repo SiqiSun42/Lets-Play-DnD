@@ -1,340 +1,335 @@
 # LetsPlayDnD × DSH 迁移 Spec
 
-> 配套文档：`update.md`（调研过程与证据）。本文件是执行方案。
-> 备份基点：`main` @ `00cbb7f`
+---
+
+## 1. 概述
+
+将 LetsPlayDnD 的 agent 编排从手写 Python 流程迁移到 DeepSeek Harness（DSH）。前端与账号体系保持不变，通过事件适配层对接。
+
+DSH 与 Flask 之间的通道采用社区插件 `dsh2server`：DSH 实例**主动连出**到 Flask，上行推送实时事件（含逐 token 流），下行接受会话操作。协议有完整文档与两份参考实现，Flask 侧按文档实现服务端即可。
 
 ---
 
-## 1. 目标
+## 2. 范围
 
-把手搓的 agent 编排换成 DSH：
+### 2.1 目标
 
-| 现在 | 目标 |
+| 现状 | 目标 |
 |---|---|
-| `System/consult`、`System/game` 里的 Python DAG | SKILL.md 描述的流程，模型自行推进 |
+| `System/consult`、`System/game` 中的固定 DAG | SKILL.md 描述的流程，由模型推进 |
 | `Prompts/*.md` 按 stage 加载 | SKILL.md 正文 + `references/` 资源 |
-| 19 个 function-calling 工具（多数是结构化输出壳） | 极简工具面：`read` / `write` / `skill` + 2 个 MCP 工具 |
-| 手写 `if func_name == ...` 分发 | DSH 工具分派 |
+| 19 个 function-calling 工具 | `read` / `write` / `edit` / `skill` + 2 个 MCP 工具 |
+| Python 手写工具分发 | DSH 工具分派 |
+| 自定义单进程 LLM 调用 | 每用户一个 DSH 实例 |
 
-**范围**：consult 优先，game 常规回合其次，battle 暂缓（流程本身未完成）。
-**语言**：仅中文（bilingual 暂缓，见 §6）。
+### 2.2 范围外
+
+| 项 | 说明 |
+|---|---|
+| battle 流程 | 流程本身尚未完成，暂缓 |
+| 中英双语 | 暂缓；当前仅实现中文 |
+| DSH 插件**开发** | 不编写任何 DSH 插件；仅**安装并使用**第三方 `dsh2server` |
 
 ---
 
-## 2. 目标架构
+## 3. 目标架构
 
 ```
 浏览器 (UI/)
-   │  现有 SSE（前端不改）
+   │  SSE（前端不变更）
    ▼
-Flask (server.py) ── 用户 / 账号 / 存档元数据 ──▶ account.db
-   │                                              Account/<user>/Saves/<id>/
-   │  会话管理 + 事件翻译（session.event → 现有事件格式）
-   ▼
-DSH 实例（每用户一个）  profile: 自定义 patch（§4 P3）
-   │  MCP over HTTP
-   ▼
-MCP 服务（常驻单进程）── import ──▶ RAG/ + Dice/
+Flask ── 前端接口 / 账号 / 存档元数据 / 中转服务器
+   │
+   ├──▶ account.db
+   └──▶ Account/<user>/Saves/<id>/
+
+   ▲  WebSocket（DSH 主动连出，非 Flask 主动连接）
+   │
+DSH 实例（每用户一个，web-capable profile）
+   ├── dsh2server 插件 ── 事件上行 / 操作下行
+   └── MCP over HTTP
+          │
+          ▼
+      MCP 服务（常驻单进程）── import ──▶ RAG/ + Dice/
 ```
+
+**连接方向**：由 DSH 主动连出。Flask 不需要访问实例所在主机，实例也不需要开放入站端口。
 
 ---
 
-## 3. 部署拓扑 —— 先纠正一个理解
+## 4. 部署拓扑
 
-### 3.1 DSH 不会去 GitHub 拉 skills
+### 4.1 仓库布局
 
-**核心事实：`dsh-skill-filesystem` 只扫服务器本地目录。**
-
-它的扫描根（按 rank）：
+单仓库，服务器通过 `git pull` 更新。
 
 ```
-100  <projectRoot>/.dsh/skills
-200  <projectRoot>/.agents/skills
-300  customSkillDirs（可配置）
-400  <dshHome>/skills
-500  <agentsHome>/skills
-```
-
-`projectRoot` = 含 `.git` 的最近祖先目录。**没有任何"从 GitHub 导入"的机制**——`dsh-skill` 注册表理论上接受远程 provider，但那是要自己写插件的。
-
-所以实际链路仍然是：
-
-```
-本地开发 → git push → 服务器 git pull → DSH 从服务器本地目录扫到 skills
-```
-
-（例外：`dsh plugin add github:<user>/<repo>` 会把一个包装进 profile。但那要求 skills 以插件形式打包，而我们已经决定不打包。）
-
-### 3.2 所以「分开」是逻辑上的，不是物理上的
-
-你的直觉方向对，但要精确：
-
-| | 说明 |
-|---|---|
-| ✅ 对 | Flask + Account + RAG 是**应用**；Skills 是**agent 行为配置**。两者变更节奏不同、职责不同，是**不同的 artifact** |
-| ❌ 需修正 | 它们**都在同一台服务器上**。Skills 不是"不用上传"，而是"不用经过 Flask"——DSH 直接从文件系统读，与 Flask 无关 |
-| ⚠️ 补充 | DSH 只是**不通过 Flask** 拿 skills。文件本身还是得在服务器上 |
-
-### 3.3 建议：先放同一个 repo
-
-**理由**：
-
-- `dsh-skill-filesystem` 默认 `watch: true`，**skill 改动热加载**——编辑 `SKILL.md` 或 `references/` 后，下一个模型步骤就生效，**不用重启 DSH**
-- 一次 `git pull` 更新全部；skill 改动不触发 Flask 重启
-- 单人项目，没有并行迭代的协调需求
-- 以后要拆是**改一行配置**的事，不是重构
-
-**拆分时机**：当 skill 迭代频繁到"每次都要连带部署应用"成为负担时——目前不是。
-
-### 3.4 服务器布局
-
-```
-/opt/letsplaydnd/                    ← 一个 repo，git pull 更新
+/opt/letsplaydnd/
   server.py
-  System/  UI/  RAG/  Dice/
+  System/
+  UI/
+  RAG/
+  Dice/
   Skills/
     consult-zh/
       SKILL.md
-      references/                    ← 现在的提示词
+      references/
   MCP/
-    mcp_server.py                    ← RAG + 骰子 的 MCP 服务
+    mcp_server.py
+  Relay/                    # dsh2server 协议的服务端实现
   dsh/
-    profile.patch.yml                ← 共享的 profile 覆盖
-    units/                           ← systemd 单元模板
+    profile.patch.yml
+    units/
 
-/var/lib/letsplaydnd/history/        ← 存档快照裸库（模型够不到，见 §4 P5）
-/var/lib/letsplaydnd/users/<name>/   ← 每用户 DSH_HOME（0700）
+/var/lib/letsplaydnd/history/         # 存档快照裸库（工作区之外）
+/var/lib/letsplaydnd/users/<name>/    # 每用户 DSH_HOME（0700）
 ```
 
-### 3.5 共享配置：用 `--patch`
+### 4.2 组件职责
 
-每用户有独立 `DSH_HOME`，意味着 profile 配置会重复 N 份。用**共享 patch 文件**避免：
+| 组件 | 职责 | 部署单元 |
+|---|---|---|
+| Flask | 前端接口、账号、存档元数据 | `server.py` |
+| 中转服务器 | dsh2server 协议服务端；实例注册、事件接收、操作下发 | `Relay/`，与 Flask 同进程或独立进程 |
+| MCP 服务 | 提供 `search_rules`、`roll_dice` | 独立常驻进程 |
+| DSH 实例 | agent 循环、skill 加载、工具分派 | 每用户一个 |
+| `dsh2server` | DSH 侧桥接：上行事件、下行操作 | DSH 插件 |
+| 存档快照 | 回合级版本化与回滚 | 工作区外裸库 |
+
+### 4.3 配置分发
+
+每用户拥有独立 `DSH_HOME`。与用户无关的配置通过 patch 文件注入：
 
 ```bash
-dsh --profile sdk --patch /opt/letsplaydnd/dsh/profile.patch.yml
+dsh --profile <name> --patch /opt/letsplaydnd/dsh/profile.patch.yml
 ```
 
-patch 里放与用户无关的东西：`customSkillDirs`、工具 allowlist、MCP server 地址、模型路由。
-每用户私有的部分（凭据、`DSH_HOME`）走环境变量。
+patch 内容：`customSkillDirs`、工具 allowlist、MCP 服务地址、模型路由、`dsh2server` 的 endpoint。
+用户私有内容（凭据、`DSH_HOME` 路径）通过环境变量传入。
 
-### 3.6 更新后要不要重启 DSH？
+`dsh2server` 的 endpoint 也可由环境变量 `DSH2SERVER_ENDPOINT` 提供。
 
-**Skill 和插件不是一回事。**
+### 4.4 更新与重启矩阵
 
-| 更新什么 | 重启 DSH？ | 依据 |
+| 变更对象 | 需重启 DSH | 机制 |
 |---|---|---|
-| Skill 正文（`SKILL.md` body） | ❌ 不用 | "每次加载都会重新读取当前文件" |
-| Skill frontmatter（name / description） | ❌ 不用 | "下一个模型步骤触发目录刷新" |
-| `references/` 等资源 | ❌ 不用 | 模型自己 `read`，本就没有缓存 |
-| MCP 服务代码（RAG / Dice） | ❌ 不用 | 重启 MCP 服务即可，DSH 自动重连并刷新工具集 |
-| profile patch（工具集 / MCP 地址 / skill 目录） | ⚠️ 看 `patchReload` | **自定义 profile 默认 `live` → 不用**；随附 `sdk` / `acp` 模板是 `startup` → 要 |
-| 装卸插件包（`dsh plugin add`） | ✅ 要 | bundle 名单变化 |
-| DSH 本体升级 | ✅ 要 | |
+| Skill 正文 | 否 | 每次加载重新读取文件 |
+| Skill frontmatter | 否 | 下一模型步骤刷新目录 |
+| `references/` 资源 | 否 | 模型按需读取，无缓存 |
+| MCP 服务代码 | 否 | 客户端自动重连并刷新工具集 |
+| profile patch | 否 | 自定义 profile 默认 `patchReload: live` |
+| `dsh2server` 的 endpoint | 否 | 该插件 GUI 配置立即生效 |
+| 其余 `dsh2server` 配置 | 否 | 同上 |
+| 插件包增删 | 是 | bundle 名单变化 |
+| DSH 本体升级 | 是 | — |
 
-**关键**：`dsh-app-boot` 文档说"**自定义 profile 省略 reload 策略时保留历史 `live` 默认值**"。本项目用的是自建 profile，所以默认就是 `live`——**patch 文件能实时重组合，不用重启**。随附的 `web` / `sdk` / `acp` 模板才强制 `startup`。这是自建 profile 的一个实际好处。
+**MCP 重试预算**：`reconnect.maxAttempts` 默认 10，延迟自 500 ms 起翻倍、上限 30 s，累计约 2.5 分钟。超出后该服务的工具被移除且停止重连，需重载配置或重启 harness。
 
-`patchReload: live` 原文："会监视两份用户 patch 文件：有效编辑无需重启即可重新组合，被拒绝的编辑则让最后一个可用应用继续运行。"
-
-⚠️ **一个坑**：MCP 断连有重试预算。`dsh-mcp-client` 默认 `reconnect.maxAttempts: 10`，延迟从 500 ms 翻倍、上限 30 s——累计**约 2.5 分钟**。超过预算后该服务器的工具会被移除、重连停止，直到重载配置或重启 harness。所以 MCP 服务重启要快；长时间停机就得重启 DSH。
+**中转服务器不可达时**：`dsh2server` 按同样策略退避重连（默认 1 s 起、上限 60 s）。服务器补登 key 或恢复后，实例会自动恢复，无需重启 DSH。
 
 ---
 
-## 4. 执行阶段
+## 5. 组件规格
 
-按依赖排序。每个阶段独立可验收、可回退。
+### 5.1 MCP 服务
 
-### P0 · 技术验证（spike）
+| 项 | 规格 |
+|---|---|
+| 实现 | Python，直接 import 现有 `RAG/` 与 `Dice/` |
+| 传输 | Streamable HTTP，监听 127.0.0.1 |
+| 生命周期 | 常驻单进程，由 systemd 管理 |
+| 工具 `search_rules` | 参数 `query`、`context_label`；调用 `RAG/` |
+| 工具 `roll_dice` | 参数 `names`、`dice_type`、`nums`、`sides`；调用 `Dice/` |
 
-**目的**：证实/证伪核心假设，产出可丢弃。
+**传输选型**：stdio 由每个 DSH 实例各自 spawn 服务进程，将导致 N 份 Chroma 与 embedding 模型常驻内存。HTTP 由全部实例共享一份。
 
-**做**：
+**版本一致性**：adapter 与 RAG 实现处于同一仓库、同一次提交，不存在独立版本。
 
-1. 起 `dsh --profile sdk` 子进程，独立 `DSH_HOME` + 环境变量注入测试 key
-2. 用 Python SDK 发一句 prompt，把 `session.event` 原样打出来
-3. 确认三件事：思考是否逐 token 流出、工具调用事件长什么样、有没有我们还需要的事件类型
+### 5.2 Skills
 
-**验收**：能看到逐步的 thinking 与 content 事件；能收到 tool_call 事件。
-**依赖**：无。**不改任何现有代码。**
+- 位置：`Skills/consult-zh/`
+- 结构：`SKILL.md` 加 `references/` 子树
+- `references/` 下文件**不自动进入上下文**，由模型通过 `read` 获取；SKILL.md 正文须给出资源路径指引
+- 语言隔离：中文与英文为独立目录（`consult-zh/`、`consult-en/`），不在同一 `SKILL.md` 内做语言分支
 
-> 这一步若能证伪"DSH 能驱动这个游戏流程"，后面全部作废——所以放最前面。
+### 5.3 DSH profile
 
-### P1 · MCP 服务
+必须是 **web-capable** profile：`dsh2server` 的会话能力来自 `sessionController`（由 web 组合提供）。不能使用 `sdk` / `sdk-minimal`。
 
-**做**：
+**挂载**：
 
-1. `MCP/mcp_server.py`，HTTP transport，暴露两个工具：
-   - `search_rules` → `from RAG import ...`
-   - `roll_dice` → `from Dice.dice import roll_dice`
-2. systemd 单元，常驻，固定端口（仅 127.0.0.1）
+| 包 | 用途 |
+|---|---|
+| `dsh-web-app`（或等价组合） | 提供 `sessionController` 等会话服务 |
+| `dsh-tool-fs` | `read` / `write` / `edit` |
+| `dsh-tool-skill`、`dsh-skill`、`dsh-skill-filesystem` | skill 目录与加载 |
+| `dsh-fs-sandbox`、`dsh-sandbox-policy` | 写入围栏 |
+| `dsh-fs-observation-policy` | 读后写策略 |
+| `dsh-mcp-client` | MCP 桥接 |
+| `dsh2server` | 与 Flask 的桥接 |
 
-**为什么 HTTP 不是 stdio**：每用户一个 DSH 实例，stdio 会让每个实例 spawn 自己的 MCP server → **N 份 Chroma + N 份 embedding 模型**。现有 Flask 里 RAG 是共享的，改 stdio 是回退。HTTP 共享一份。
+**不挂载**：`dsh-tool-bash`、`dsh-tool-pwsh`、`dsh-tool-jobs`、`dsh-tool-fs-search`、`dsh-tool-subagent`、`dsh-tool-subagent-control`、`dsh-tool-workflow`、`dsh-tool-todo`、`dsh-tool-goal`、`dsh-tool-ralph`、`dsh-tool-web`。
 
-**验收**：MCP 客户端能调通两个工具；进程常驻，RAG 只加载一次；重启后自动恢复。
-**依赖**：无（可独立于 DSH 完成）。
+**沙箱配置**：`mode: workspace-write`，`workspaceRoot` 指向当前存档目录。
 
-### P2 · consult skills（中文）
+**需单独安装的包**：`dsh-mcp-client`（不在 `dsh-base` 中）。
 
-**做**：
-
-1. `Skills/consult-zh/SKILL.md`：流程总纲 + 指向 references
-2. `Skills/consult-zh/references/`：把 `Prompts/consult/*.md` 搬进来
-3. 三段式（判断 → 查规则 → 输出）——`System/consult/consult.py:334` 那段**被注释掉的 3 段版**就是雏形
-
-**验收**：本地 DSH 手动对话，能走完"判断是否需要查规则 → 调 `search_rules` → 输出"，且规则引用正确。
-**依赖**：P1（需要 `search_rules`）。
-
-### P3 · 最小 profile
-
-**做**：`dsh/profile.patch.yml`，只挂需要的：
-
-```yaml
-- insert:
-    # ... llm / session / agent / system-prompt 等必需内核
-    #     模板参考 dsh-sdk-minimal/cordis.patch.yml
-
-    - id: sandbox-policy
-      name: '@deepseek-ai/dsh-sandbox-policy'
-    - id: fs
-      name: '@deepseek-ai/dsh-fs-sandbox'
-      config:
-        cwd: <存档工作区>
-    - id: fs-observation-policy
-      name: '@deepseek-ai/dsh-fs-observation-policy'
-    - id: tool-fs
-      name: '@deepseek-ai/dsh-tool-fs'
-    - id: skill
-      name: '@deepseek-ai/dsh-tool-skill'
-    - id: skill-fs
-      name: '@deepseek-ai/dsh-skill-filesystem'
-      config:
-        customSkillDirs: ['/opt/letsplaydnd/Skills']
-    - id: mcp
-      name: '@deepseek-ai/dsh-mcp-client'
-      # ... 指向 MCP 服务的 HTTP 地址
-
-    # 全部不挂：bash / pwsh / jobs / fs-search / subagent /
-    #          workflow / todo / goal / ralph / web
+```bash
+dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client
+dsh plugin --profile <name> add github:23J1633/dsh2server
 ```
 
-**本阶段不写任何 DSH 插件代码**：
+### 5.4 中转服务器（Flask 侧）
 
-- profile patch 是 **YAML 配置**，组合的是现成官方包，不是新插件
-- `dsh-tool-fs`、`dsh-tool-skill`、`dsh-skill`、`dsh-skill-filesystem`、`dsh-fs-sandbox`、`dsh-sandbox-policy`、`dsh-fs-observation-policy` **都已在 `dsh-base` 的依赖与 patch 里**，直接引用即可
-- 唯一需要**安装**（非开发）的是 `@deepseek-ai/dsh-mcp-client`——**它不在 base 中**：
+实现 `dsh2server` 协议 v1 的**服务端**。规范见该插件的 `docs/API.md`。
 
-  ```bash
-  dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client
-  ```
+| 项 | 规格 |
+|---|---|
+| 端点 | `{basePath}/ws`（WebSocket 升级）、`{basePath}/events`（POST）、`{basePath}/inbox`（GET） |
+| 传输 | 优先 WebSocket；HTTP 长轮询为回退 |
+| 认证 | `hello` 帧的 `auth.key`，或 `Authorization: Bearer`，或 `?key=` |
+| 实例模型 | 一 key 一实例；key 恒定时间比较；持久化白名单 |
+| 上行 | `session/event`、`session/status`、`session/activity`、`session/assistant-stream` |
+| 下行 | `session.prompt`、`session.interrupt`、`session.pause`/`resume`、`session.create`、`session.list`、`session.history`、`session.permission`、`approval.respond` 等 |
+| 序号 | 按 `seq` 去重；`hello.resumeFromSeq` / `hello.ack.resumeFromSeq` 实现补发 |
 
-- 工具能力全部由 **MCP（Python 脚本）** 提供，不是 DSH 插件
+**必做清单**（规范 §12）：端点、key 白名单、认证、`hello → hello.ack`、`subscribe`、请求/响应配对与超时、事件按 `seq` 去重、心跳、HTTP 载体的 per-instance 待发队列、`bye` 处理、多机器隔离。
 
-> 整个方案**零 DSH 插件开发**。原先考虑过的两个插件（读围栏的 path-guard、多用户 key 的 LLM adapter）已被 systemd 命名空间与「每用户一实例」取代。
+**参考实现**：插件包内 `examples/server.js`（Node，WebSocket + HTTP）与 `php/dsh-relay.php`（PHP 单文件，HTTP 长轮询）。后者是最贴近 Flask 的移植起点。
+
+### 5.5 前端事件映射
+
+`dsh2server` 的 `session/assistant-stream` 帧与前端现有事件类型几乎一一对应：
+
+| 帧 | 前端事件 |
+|---|---|
+| `frame.type = start` | 新气泡开始 |
+| `chunk.chunk.type = reasoning-delta` | `thinking` |
+| `chunk.chunk.type = text-delta` | `content` |
+| `chunk.chunk.type = block-start` / `block-end` | 内容块边界 |
+| `chunk.chunk.type = finish` | `done` |
+| `frame.type = end` | 气泡结束 |
+
+前端**不需要改动**事件模型，只需在中转服务器侧写翻译层。
+
+---
+
+## 6. 实施阶段
+
+### P0 技术验证 —— 已完成
+
+**内容**：以独立 `DSH_HOME` 启动 SDK profile，通过 Python SDK 提交提示词，记录 `session.event` 输出。
+
+**结论**：
+
+| 项 | 结果 |
+|---|---|
+| 逐 token 流（SDK `session.event`） | ❌ 不可用。全部事件在 step 结束时一次性到达；4 秒生成期间零事件 |
+| 逐 token 流（ACP） | ❌ 规范明确排除"原始提供方增量" |
+| 逐 token 流（`dsh2server`） | ✅ 可用。实测 486 帧 / 2.26 秒，帧间隔中位 10 ms，含 370 `reasoning-delta` + 108 `text-delta` |
+| `dsh2server` 能力覆盖 | ✅ 除 `terminal` 外全部可用 |
+
+**由此确定**：桥接通道采用 `dsh2server`，SDK 仅用于未来可能的自动化脚本。
+
+**遗留**：P0 的验收项「模型在极简工具面下完成三段流程」依赖 P3，移至 P3 验收。
+
+### P1 MCP 服务
+
+**内容**：实现 `MCP/mcp_server.py`（两个工具）与 systemd 单元。
+
+**验收**：两个工具可经 MCP 调用；进程常驻；RAG 仅加载一次。
+
+**依赖**：无。
+
+### P2 consult skills
+
+**内容**：编写 `Skills/consult-zh/`，迁移 `Prompts/consult/` 内容至 `references/`。
+
+**验收**：本地 DSH 完成「判断 → 检索 → 输出」，规则引用正确。
+
+**依赖**：P1。
+
+### P3 DSH profile
+
+**内容**：编写 `dsh/profile.patch.yml`，基于 web-capable profile，加入 `dsh2server`。
 
 **验收**：
 
-- 模型可见工具**恰好**是 `read` / `write` / `edit` / `skill` / `mcp__*`
-- 尝试写工作区外的路径 → `FS_SANDBOX_DENIED`
-- 确认模型**无法**自行提权沙箱模式（无 approver 时应 fail-closed）
+- 模型可见工具恰为 `read` / `write` / `edit` / `skill` / `mcp__*`
+- 工作区外写入返回拒绝
+- 沙箱模式不可由模型自行提升
+- 模型在极简工具面下完成一次三段流程
 
-**依赖**：P1（MCP 地址）、P2（skills 目录）。
+**依赖**：P1、P2。
 
-### P4 · Flask ↔ DSH 桥
+### P4 中转服务器
 
-**做**：
+**内容**：在 Flask 侧实现 `dsh2server` 协议 v1 服务端，覆盖规范 §12 的必做清单；实现实例注册、事件接收与转发、操作下发。
 
-1. **实例管理**：每用户一个 DSH 进程——分配端口、独立 `DSH_HOME`、注入该用户 API Key（从 `account.db` 解密）、生命周期与重启
-2. **事件翻译**：读 DSH 的 `session.event`，转成前端现有的事件 JSON
-3. 前端**不改**
+**验收**：
 
-**验收**：前端零改动，consult 走 DSH 也能正常出字与显示思考。
+- 一个 DSH 实例能连接并出现在实例表中
+- `session/assistant-stream` 的 `reasoning-delta` 与 `text-delta` 能实时转发到前端，打字机效果与迁移前一致
+- 下发 `session.prompt` 能驱动会话并收到完整回复
+- 断线后能自动重连并按 `seq` 补发，不丢事件
+
 **依赖**：P3。
-**参考**：[dsh-server-deployment](https://github.com/AnkoCD/dsh-server-deployment) 的 `gateway/userctl.js` 与 `docs/multi-user-isolation.md`。
 
-### P5 · 安全加固
+**起点**：移植 `php/dsh-relay.php` 或对照 `examples/server.js`。
 
-**做**：
+### P5 安全加固
 
-1. **systemd 命名空间**（读隔离）：
+**内容**：
 
-   ```ini
-   InaccessiblePaths=/opt/letsplaydnd/.env
-   InaccessiblePaths=/opt/letsplaydnd/account.db
-   ProtectHome=yes
-   ProtectProc=invisible
-   ProcSubset=pid
-   ReadOnlyPaths=/opt/letsplaydnd
-   NoNewPrivileges=yes
-   ```
+1. 每用户 DSH 实例的 systemd 文件系统命名空间隔离
+2. 存档快照（工作区外裸库）
+3. 中转服务器的 key 白名单与恒时比较
+4. 回环租户隔离（多实例部署时）
 
-   `ProtectProc` / `ProcSubset` 是必需的——否则同账号下仍可读 `/proc/<flask_pid>/environ` 拿密钥。需较新的 systemd。
+**验收**：DSH 进程内不可读 `.env` 与 `account.db`；存档可回滚至任意回合。
 
-2. **存档快照**（工作区**之外**的裸库，模型够不到）：
-
-   ```bash
-   git --git-dir=/var/lib/letsplaydnd/history/<save_id>.git \
-       --work-tree=<存档目录> add -A
-   git --git-dir=... commit -m "turn N"
-   ```
-
-3. **回环租户隔离**（若多用户实例并存在 127.0.0.1）：iptables OUTPUT，每个实例只能连自己的端口。否则任一租户可伪造 Host 直连他人端口窃取 API Key。
-
-**验收**：DSH 进程内读不到 `.env` 与 `account.db`；存档可回滚到任意回合。
 **依赖**：P4。
 
-### P6 · game 流程迁移
+### P6 game 流程迁移
 
-**做**：把 `System/game/game_zh.py` 的 DAG 改写成 skill。
+**内容**：将 `System/game/game_zh.py` 的流程改写为 skill。按类别分派提示词由模型执行，SKILL 正文约束其只读取对应 `references/` 文件。存档由模型直接写入，以 P5 快照兜底。不保留 `plan_panel_update` 类 gate 工具。
 
-- 按类别分派提示词 → 交给模型，在 SKILL 正文约束"按类别只读对应 references 文件"
-- 存档写入 → 模型直接 `write`，由 P5 的快照兜底
-- 不再保留 `plan_panel_update` 一类的 gate 工具
+**验收**：常规回合端到端可玩；异常写入可回滚。
 
-**验收**：常规回合端到端可玩；坏写入可回滚。
 **依赖**：P5。
 
-### P7 · battle
+### P7 battle
 
-**暂缓**——流程本身未完成，等 game 跑通且 battle 设计定稿后再做。
-
----
-
-## 5. 迁移策略：并行运行，逐流程切换
-
-不要一次性替换。新旧路径并存，用开关逐步切换：
-
-1. Flask 保留现有 `System/consult`、`System/game` 代码路径
-2. 新增 DSH 路径，按用户/存档（或全局开关）选择走哪条
-3. **先切 consult**（最独立、最简单）
-4. 稳定后再切 game 常规回合
-5. battle 不动
-
-好处：**每个流程都能独立回退**，且回退不需要 revert 代码——切回开关即可。
-
-配合已有的备份基点（`main` @ `00cbb7f`），最坏情况是丢掉全部改动——但按上面的顺序不会走到那一步。
+暂缓。
 
 ---
 
-## 6. 暂缓项
+## 7. 迁移策略
 
-| 项 | 状态 | 恢复时的注意 |
-|---|---|---|
-| **中英双语** | 暂缓 | 先跑通中文。**结构上必须隔离**：`consult-zh/` 与 `consult-en/` 是两份独立文件，**不要在一个 SKILL.md 里做语言分支**——那会导致"改一份要改两处"。现有 `game_zh.py` / `game_en.py` 已是这个模式，照搬 |
-| **battle** | 暂缓 | 流程未完成 |
+新旧路径并存，逐流程切换：
 
----
+1. Flask 保留现有 `System/consult`、`System/game` 路径
+2. 新增 DSH 路径，由开关选择
+3. 先切换 consult，验证后再切换 game 常规回合
+4. battle 不变更
 
-## 7. 不可违反的约束
-
-1. **工具面最小**：不挂 bash / subagent / workflow / web。这是读围栏得以完备的前提——有 shell 就能 `cat` 任何东西
-2. **快照在模型写围栏之外**：否则等于没做
-3. **`.env` / `account.db` 不在 DSH 可达范围内**：`FLASK_SECRET_KEY` 泄露 = 可伪造任意用户 session = 全站接管
-4. **RAG adapter 与 RAG 同 repo 同 commit**：避免版本漂移
+回退通过开关完成，无需 revert 代码。代码级回退锚点：tag `v0.9-working`。
 
 ---
 
-## 8. 尚未验证的假设（P0 要回答的）
+## 8. 约束
 
-- [ ] DSH 的 `session.event` 能拿到逐 token 的 thinking
-- [ ] 思考/正文/工具调用能映射到前端现有的事件类型
-- [ ] 模型在只读/写 + skill 的工具面下，能可靠地走完三段流程
-- [ ] 无 approver 时沙箱提权确实 fail-closed
+1. **工具面最小化**。不挂载 shell、subagent、workflow、web。工具级读围栏的完备性以「无 shell」为前提。
+2. **快照仓库位于模型写围栏之外**，否则失去保护意义。
+3. **`.env`、`account.db` 不得处于 DSH 进程可达范围**。二者泄露等价于全部用户会话与 API Key 泄露。
+4. **RAG adapter 与 RAG 实现同仓库、同提交**。
+5. **DSH profile 必须是 web-capable**。`sdk` / `sdk-minimal` 不提供 `sessionController`，`dsh2server` 的会话能力会退化。
+6. **中转服务器的实例 key 按用户隔离**。一个 key 只能访问其对应实例，禁止跨实例操作。
+
+---
+
+## 9. 待验证事项
+
+- 无 approver 时沙箱提权是否失败关闭（P3）
+- 模型在极简工具面下能否稳定完成三段流程（P3）
+- `dsh2server` 在自定义 web-capable profile 下的能力集合是否满足需求（P3）
