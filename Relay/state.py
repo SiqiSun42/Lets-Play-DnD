@@ -528,6 +528,15 @@ class RelayState:
                     return inst.instance_id
         return None
 
+    def last_seq(self, instance_id: str) -> int | None:
+        """该实例当前的最大事件序号；实例未知返回 None。
+
+        用于"下发提示词前先记下水位"，这样随后只转发本轮产生的事件。
+        """
+        with self.lock:
+            inst = self.instances.get(instance_id)
+            return None if inst is None else inst.last_seq
+
     def events_since(self, instance_id: str, since: int = 0, limit: int = 200):
         with self.lock:
             inst = self.instances.get(instance_id)

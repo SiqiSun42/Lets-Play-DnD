@@ -17,6 +17,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 # DSH 中转服务器（dsh2server 协议 v1 的服务端实现）。见 spec.md §6 P4。
 from Relay import RelayState, SqliteKeyStore
+from Relay.adapter import DshSessionMap, stream_consult
 from Relay.blueprint import create_blueprint as create_relay_blueprint
 from Relay.sse import iter_frontend as relay_iter_frontend
 
@@ -39,6 +40,14 @@ RELAY_BASE_PATH = os.environ.get("DSH_RELAY_BASE_PATH", "/dsh-api")
 relay_state = RelayState(SqliteKeyStore(DB_PATH))
 app.register_blueprint(create_relay_blueprint(relay_state, base_path=RELAY_BASE_PATH))
 app.extensions["dsh_relay_state"] = relay_state
+
+# ── consult 适配层（spec.md §6 P3.5）──────────────────────────────
+# 打开后 /api/consult/message/stream 内部改走 DSH，**前端零改动**。
+# 新旧路径并存：不设这个开关就完全走 System/consult 的原有流程。
+DSH_CONSULT_ENABLED = os.environ.get("DSH_CONSULT_ENABLED", "").strip().lower() in (
+    "1", "true", "yes", "on")
+# (用户名, 存档) → DSH 会话 id 的持久映射，与 relay 同库。
+dsh_session_map = DshSessionMap(DB_PATH)
 
 
 def load_game_templates() -> list:
@@ -809,6 +818,37 @@ def delete_meta_save():
     )
     return jsonify({"ok": True, "data": new_data})
 
+def _dsh_consult_stream(username: str, text: str):
+    """把 consult 一轮走 DSH，按前端既有事件格式产出 SSE（spec §6 P3.5）。
+
+    DSH 侧不需要 Flask 这边的用户 API Key——每个 DSH 实例用自己的凭据。
+    """
+    from System.consult.consult import append_message
+
+    # consult 只查规则、不碰存档文件；工作区用用户自己的账号目录。
+    cwd = ROOT / "Account" / username
+    cwd.mkdir(parents=True, exist_ok=True)
+
+    def generate():
+        try:
+            yield from stream_consult(
+                relay_state, dsh_session_map,
+                username=username, save_id="consult", text=text,
+                cwd=str(cwd),
+                persist=lambda role, content, reasoning: append_message(
+                    username, role, content, reasoning),
+            )
+        except Exception as exc:  # noqa: BLE001 — 对前端只暴露为一条 error 事件
+            yield ("data: " + json.dumps(
+                {"type": "error", "error": str(exc)}, ensure_ascii=False) + "\n\n")
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/consult/message/stream")
 def consult_message_stream():
     username = session.get("username")
@@ -819,6 +859,10 @@ def consult_message_stream():
     text = (body.get("text") or "").strip()
     if not text:
         return jsonify({"error": "empty"}), 400
+
+    # DSH 路径：不查 Flask 侧的用户 API Key（每个 DSH 实例自带凭据）。
+    if DSH_CONSULT_ENABLED:
+        return _dsh_consult_stream(username, text)
 
     api_key = get_user_api_key(username)
     if not api_key:

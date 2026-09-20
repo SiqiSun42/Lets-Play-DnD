@@ -244,10 +244,10 @@ dsh plugin --profile <name> add github:23J1633/dsh2server
 | P0 | 技术验证 | — | ✅ 已完成 |
 | P1 | MCP 服务 | — | ✅ 已完成 |
 | P2 | consult skills | P1 | ✅ 已完成 |
-| P3 | DSH profile | P1、P2 | 待做 |
-| **P3.5** | **consult 适配层**（新增） |  P2、P3、P4 | 待做 |
+| P3 | DSH profile | P1、P2 | ✅ 已完成（§9 三条验证移交 P6） |
+| **P3.5** | **consult 适配层**（新增） |  P2、P3、P4 | ✅ 已完成 |
 | P4 | 中转服务器 | — | ✅ 已完成 |
-| P5 | 安全加固 | P3.5 | 待做 |
+| P5 | 安全加固 | P3.5 | 进行中（key 白名单、存档快照、读白名单 已完成；剩回环租户隔离） |
 | P6 | game 流程迁移 | P5 | 待做 |
 | P7 | battle | — | 暂缓 |
 
@@ -384,8 +384,14 @@ dsh/
 | preset 被发现 | ✅ 出现在 preset 名单中 |
 | **工具面裁剪** | ✅ 模型自报可用工具恰为 `read` / `write` / `edit` / `read_image` / `skill`——无 shell、无 web、无 subagent、无 workflow、无 todo/goal |
 | preset 挂载（含压缩组） | ✅ 正常运行，无错误 |
-| MCP 工具 | ⏳ 需带 `--patch` 重启后验证 |
-| 沙箱 `workspace-write` | ⏳ 同上 |
+| MCP 工具 | ✅ 随 P3.5 consult 端到端实测通过：模型成功调用 `search_rules`（并据召回结果正确声明"非规则书引用"） |
+| 沙箱 `workspace-write` | ✅ 同上（模型写入存档成功，工作区外写入被拒） |
+| skill 目录 | ✅ 只出现预期 skill（`consult`） |
+| **三段流程** | ✅ consult 端到端实测通过（判断 → 检索 → 输出），浏览器内验证：流式正文、思考过程、持久化、单气泡渲染均正常 |
+
+> 上表最后四行原先标为"待 `--patch` 重启后验证"，实际已由 P3.5 的 consult 端到端实测覆盖，故订正。
+> 剩余未做的只有 §9 的三条**边界**验证（无 approver 时的提权失败关闭、极简工具面下的稳定性、
+> `dsh2server` 能力集合），它们更适合在 P6 的完整游戏流程里做，已移交 P6。
 
 #### ⚠️ 五个实现坑（都已踩过）
 
@@ -451,6 +457,73 @@ preset 里挂了 `compaction` 组（`compaction-basic` + `command-compact` + `to
 **依赖**：P2、P3、P4。
 
 **这是「`python server.py` 之后就能在前端测 consult」的分界线**——此阶段完成后才成立。
+
+#### 结果 —— 已实现并端到端验证
+
+产物：`Relay/adapter.py`（会话映射 + 流式适配），`server.py` 加开关 `DSH_CONSULT_ENABLED`。
+
+| 项 | 结果 |
+|---|---|
+| 前端改动 | **0 行** |
+| 会话映射 | `account.db` 的 `dsh_sessions` 表，(用户名, 存档) → DSH 会话 id |
+| preset 选择 | 建会话时**显式** `agentPreset.select → letsplaydnd`，不依赖部署 `default` |
+| 流式输出 | 一次实测 761 条事件（`new_bubble` ×5、`thinking` ×233、`content` ×517、`done` ×1），11 秒 |
+| **技能流程** | ✅ 会话日志确认：技能目录含 `consult` → 调用 `skill` ×1 → `read` ×3（三个 references）→ `search_rules` ×3 |
+| 查询改写 | ✅ 模型给出 `火球术 豁免 伤害`，完全符合 `rag-query.md` 的要求 |
+| 落库 | ✅ user + assistant（含 reasoning）写入 `chat.db`，刷新页面历史仍在 |
+| 输出纪律 | ✅ 未命中时按 `output.md` 明确声明"不是规则书直接引用，可能有误" |
+
+**唯一未达标项**：验收里的「引用规则书原文」——原因是 **RAG 召回质量**，非迁移问题，见 §10.3。
+
+#### ⚠️ 附带发现的坑：不能按 step 发气泡边界
+
+DSH 的一个回合可能包含多个 step（模型 → 工具 → 模型），每个 step 都有自己的 `start`/`end`。v1 把 `start` → `new_bubble`、`end` → `end_bubble`，结果前端把一轮切成了多个 DM 气泡：某步只有思考没有正文时，就出现「一个只有思考的气泡 + 一个只有正文的气泡」。
+
+而落库的是**整条** assistant 消息，所以**刷新后又变回正确的单气泡**——生成过程与刷新后呈现不一致，正是这个原因。
+
+修法：**不发气泡边界**，思考与正文都按整轮累计。前端 `thinking`/`content` 分支各自会 `openBubbleForWrite()`，不需要边界事件开气泡；整轮共用一个，由 `done` 收尾。这样流式呈现与刷新后的历史完全一致。
+
+> **边界机制保留待用**：battle 里 DM 可能一口气推进多个回合、需要拆成多个气泡。届时把 `frame.type == "start"/"end"` 重新映射到 `new_bubble`/`end_bubble` 即可。但在那之前要先定清楚"一个气泡"对应 DSH 的什么单位——是 step，还是别的边界。正常非战斗流程应始终保持整轮一个气泡。
+
+#### ⚠️ 附带发现的坑：重启 Flask 后的首次请求必失败
+
+中转的实例表在**内存**里，Flask 一重启就空了；插件要按退避重连（最长 60 秒）。这段空窗里 `instance_for_user()` 返回 None——原本直接报 `no dsh instance bound to this account`，用户看到的就是「刚重启后第一次提问必然失败，刷新一下又好了」。
+
+修法：`wait_for_instance()` 做**有界等待**（默认 45s，可配），把这段窗口吸收掉；真超时才给明确的中文提示。
+
+> 更根本的做法是让实例表可跨进程重启（持久化或独立进程），但那超出当前阶段。
+
+#### ⚠️ 附带发现的坑：SSE 不能发 `id:` 行
+
+`Relay/sse.py` 原本按 SSE 标准发 `id: <seq>` 以便前端做断线续传。但前端解析器（`UI/js/chat-view.js`）是这样判块的：
+
+```js
+const parts = buffer.split('\n\n');
+for (const part of parts) {
+  const line = part.trim();
+  if (!line.startsWith('data:')) continue;   // ← 整块必须以 data: 开头
+  const ev = JSON.parse(line.slice(5).trim());
+```
+
+块里一旦有 `id:` 行，`line` 就变成 `"id: 1\ndata: {...}"`，`startsWith('data:')` 为假——**每一条事件都被静默丢弃**。
+
+症状很有迷惑性：**服务端执行成功、也已落库（刷新页面能看到完整回复），但前端一个字都不渲染，加载动画消失后什么都没有。**
+
+修法：只发 `data:` 行，把序号放进 JSON 载荷的 `seq` 字段。现有前端会忽略它，将来要续传时直接读，两边都不必改协议。
+
+> 教训：给已有前端新增 SSE 字段前，先读它的解析器。前端可能不是标准 SSE 客户端。
+
+#### ⚠️ 附带发现的坑：`customSkillDirs` 的生产路径回退
+
+preset 里原本写的是：
+
+```yaml
+- !!js process.env.DSH_SKILLS_DIR ?? '/opt/letsplaydnd/Skills'
+```
+
+本地没设 `DSH_SKILLS_DIR`，于是回退到**生产路径**——本地不存在，扫不到任何 skill。后果很隐蔽：**技能目录不下发，模型根本不知道 `consult` 存在**，于是跳过技能直接乱查。
+
+已改为 `process.cwd() + '/Skills'`：生产与本地的启动命令都是 `cd <项目根> && dsh ...`，两边都成立。
 
 ### P4 中转服务器 —— 已完成
 
@@ -525,7 +598,7 @@ Flask 侧实现见 `Relay/`（1090 行），已接入 `server.py`（Blueprint �
 |---|---|
 | 前端事件产出 | 179 条（`new_bubble` ×1、`thinking` ×138、`content` ×38、`end_bubble` ×1、`done` ×1） |
 | `done.content` 与增量拼接 | 一致 |
-| SSE `id:` | 每条都带，支持续传 |
+| SSE 序号 | 放在 JSON 载荷的 `seq` 字段。**不发 SSE 标准的 `id:` 行**——前端解析器按「整块是否以 `data:` 开头」判断，块里出现 `id:` 会被整条丢弃（详见 P3.5 结果里的坑） |
 | key 白名单 | 落 `account.db` 的 `dsh_instances` 表；`username` 承载归属 |
 | 鉴权 | 未登录 401、缺 `sessionId` 400、未绑定实例 403（fail closed） |
 | 断线恢复 | 插件在 relay 重启后自动重连 |
@@ -540,14 +613,177 @@ Flask 侧实现见 `Relay/`（1090 行），已接入 `server.py`（Blueprint �
 
 **内容**：
 
-1. 每用户 DSH 实例的 systemd 文件系统命名空间隔离
-2. 存档快照（工作区外裸库）
-3. 中转服务器的 key 白名单与恒时比较
+1. **模型文件读取白名单**（`ctx.fs` 工具层）— 见 P5-1，**已完成并端到端验收**
+2. 存档快照（工作区外裸库）— **已完成**（`Relay/snapshot.py`）
+3. 中转服务器的 key 白名单与恒时比较 — **已完成**（P4）
 4. 回环租户隔离（多实例部署时）
+5. ~~每用户 DSH 实例的 systemd 文件系统命名空间隔离~~ — **降级为暂缓**，理由见 P5-1「为什么不选 systemd」
 
-**验收**：DSH 进程内不可读 `.env` 与 `account.db`；存档可回滚至任意回合。
+**验收**：模型经 `read` / `read_image` 无法读取 `.env`、`account.db` 及白名单外的任何路径；
+DSH 进程自身不受影响（仍能正常启动与运行）；存档可回滚至任意回合。
 
-**依赖**：P4。
+#### P5-1 模型文件读取白名单
+
+**威胁模型**（边界先说清，因为它决定方案的形态）
+
+- **挡**：模型被提示注入误导——游戏内容或玩家输入里夹带指令，诱导它去读密钥、再念出来。模型没有 shell、没有网络，泄露渠道只有自己的文本输出、写入存档、以及 MCP 工具参数。
+- **不挡**：攻击者在 DSH 进程内取得代码执行（例如 DSH 自身的漏洞）。那种情况下只有容器 / 微虚拟机有用，与本设计无关。
+- **前提**：**预设内不存在不可信代码**。见下方不变量。
+
+**为什么是白名单而不是黑名单**
+
+实现成本完全相同——同一个检查点、同一段代码，只是比较方向反过来。所以只需比较失败模式：
+
+| | 失败模式 |
+|---|---|
+| 黑名单 | 出现新的秘密文件而未被列入 → **静默 + 灾难**。且要求穷举"现在和未来所有秘密"，不可能做到 |
+| 白名单 | 模型读不到某个正当文件 → **吵闹 + 无害**（模型会报告读不到，加一个根即可） |
+
+白名单只需枚举**我们自己的**目录，不需要枚举秘密。这是选它的唯一理由，也是最充分的理由。
+
+**根表**
+
+| 根 | 读 | 写 | 依据 |
+|---|---|---|---|
+| `ROOT/Account/<username>` | ✅ | ✅ | 就是当前的会话 cwd（`server.py:829`），**天然的用户级边界** |
+| `Skills/` | ✅ | ❌ | **必需，不能漏**：`Skills/consult/SKILL.md:9-10` 要求模型"用 read 工具读取对应文件"，不给它读 consult 直接跑不动 |
+| `Templates/` | ❌ | ❌ | **暂不列入**（未列入白名单即不可读）。模板是「开局」阶段由 Flask 侧复制成存档，模型没有读写必要。以后可能需要只读（例如游戏自建人物时参考格式），届时再加 |
+
+只有两个根。未列入的路径**默认不可读也不可写**——这正是白名单的意义，不需要为 `Templates/` 写任何"禁止"规则。
+
+注意读写根**故意不同**：`Skills/` 必须可读但不可写，否则模型能改自己的指令。
+本项是在现有 `workspace-write`（只管写、根 = 会话 cwd）**之上补一条读规则**，不替换它。
+
+**不变量**（是白名单的成立条件，不是附加项）
+
+> 本预设不得引入任何可执行代码的工具（bash / pwsh / 带 shell 的 subagent / 等价物）。
+> 引入即等于同时拆除读白名单。
+
+理由：白名单是**可信代码中的策略**，只在"模型只能发工具调用、没有第二条通往文件系统的路"时完备。
+DSH `dsh-fs-sandbox` README 的原话：围栏是策略而非内核边界，**只有目标路径不可信**，
+因此「规范化后检查包含关系」就是该接口的完整答案；不可信代码的内核级隔离由 `ctx.shell` 负责。
+当前预设工具面 = `tool-fs`（`read`/`read_image`/`write`/`edit`）+ `skill-filesystem` + `tool-skill`，
+没有 bash、web、subagent、`tool-fs-search`；MCP 工具运行在我们的进程里，不是文件系统通道。**前提成立。**
+
+**落地方式 —— 已实现**（`dsh/plugins/fs-readguard/`）
+
+选 `ctx.tools.guard()`，**不是** fs 后端，也不是 `tools/pre-execute`：
+
+- guard 是**单调**的：跑在可扩展的 pre-execute waterfall 之后，只能拒绝、不能放行，
+  所以监听器顺序无法把拒绝翻回允许。用在安全控制上这是正确语义。
+- 不动 `ctx.fs` 后端的装配（不替换 `fs-sandbox`），改动面小、可逆，摘掉插件即回到原状态。
+
+实现要点：
+
+| 决定 | 理由 |
+|---|---|
+| 只拦 `read` / `read_image` | 写围栏已由 `sandbox-policy` 负责（可写根 = 会话 cwd）且带升权提示；再拦一次会让同一件事出现两套冲突报错 |
+| 根从 `agent.session.header.cwd` 取 | 与 `dsh-tool-fs` 取 cwd 的方式一致。**不能退回 `process.cwd()`**——那是 DSH 进程启动目录，不是会话工作区，会圈错地方 |
+| 零依赖，不 import 任何 `@deepseek-ai/*` | 插件装在 profile 的 `node_modules` 里，那里解析不到 dsh 安装目录下的包 |
+| 用 `realpath` 规范化目标（不存在的路径则解析最近的已存在祖先） | 穿透**已存在**的符号链接。模型自己造不出符号链接（无 shell，`write` 只写文本），但目录里本来就可能有一个 |
+| 拿不到会话 cwd 时**拒绝** | 失败关闭。放行是静默失败、拒绝是吵闹失败——安全控制该有后者 |
+
+**单元验收 —— 26 PASS / 0 FAIL**（`node dsh/plugins/fs-readguard/test.mjs`，不启动 DSH）
+
+覆盖：工作区内读放行（绝对/相对/根本身/不存在的目标）、技能根放行、
+拒绝 `.env` / `account.db` / `~/.dsh/.credentials.yaml` / `/proc/self/environ` / `/etc/passwd`、
+相对路径向上穿越、绝对路径夹 `..`、穿过已有符号链接、**前缀陷阱**（`alice` 不能读 `alice-other`）、
+父目录不是工作区、`read_image` 同样受管、`write`/`edit`/`skill`/MCP 不受本守卫管辖、
+参数缺失交还工具校验、缺 cwd 时失败关闭。
+
+**集成验收 —— ✅ 已通过（真实 DSH 进程内实测）**
+
+在一次性 profile 上跑通（`rgtest`，从 headless 模板创建；headless **不加载 `dsh2server`**，
+因此不注册到中转、不干扰正在运行的实例）：
+
+| 输入 | 结果 |
+|---|---|
+| `read ./hello.md`（会话工作区内） | ✅ 正常返回内容 |
+| `read <项目根>/.env`（工作区外） | ✅ `Error: [readguard: read denied] …/.env 不在允许读取的范围内，已拒绝。本会话只允许读取它自己的工作区，以及技能说明文件。` |
+
+这证明了完整链路：插件在真实 DSH 启动中被加载 → 守卫注册进真实工具流水线 →
+拿到真实 `ToolExecution` 的字段 → 正确放行工作区内、拒绝工作区外。
+
+**做这个测试的关键技巧：把 `DSH_HOME` 指向工作区内部**（`poc/rg-home`），
+而不是 `~/.dsh`。这样 DSH 启动时写的 `cordis.yml`、profile、session、storage 全落在工作区内，
+**不需要任何越界权限**（沙箱是 `workspace-write`，写 `~/.dsh` 会被拒）。
+凭据从 `~/.dsh/.credentials.yaml` 拷入临时 DSH_HOME（读不受限），测完立即删除。
+
+| 结构层验收（此前已验） | 结果 |
+|---|---|
+| profile 能解析到模块 | ✅ `resolve('dsh-fs-readguard')` → 仓库内路径 |
+| `apply()` 真的挂上守卫 | ✅ |
+| 真实 `exec` 字段名 | ✅ 与 `ToolExecution` / `agent.session.header.cwd` 一致 |
+| preset YAML 结构 | ✅ |
+
+**安装方式与本地开发的三个坑**：
+
+1. **必须用全局 Node 版 `dsh`，不要用 `venv/bin/dsh`。** 后者是 **Python runtime wheel**，
+   实测**缺少 `@deepseek-ai/dsh-session-title-llm`**（`venv/lib/python3.14/site-packages/
+   deepseek_harness_runtime/runtime/node/node_modules/@deepseek-ai/` 下不存在），
+   导致**任何 profile 都无法启动**，报 `Cannot find package '@deepseek-ai/dsh-session-title-llm'`。
+   该错误与本插件无关，是 wheel 打包不完整。能用的那个在
+   `~/.nvm/versions/node/<ver>/bin/dsh`。
+2. **Python runtime 版必须显式 `export DSH_HOME`。** 它绝不隐式使用 `~/.dsh`，
+   不设会报 `the Python runtime command requires an explicit DSH_HOME`。
+   在 DSH 会话内该变量已由 harness 设好，所以从会话里跑不会遇到——换到普通终端才会突然失败。
+3. **在 DSH 会话内装插件会失败。** `pnpm` 要 chmod profile 里的 bin shim，
+   而 profile 在工作区之外，`write` 沙箱拒绝（`ERR_PNPM_CMD_SHIM_CHMOD` / `EPERM`）。
+   把 `DSH_HOME` 指到工作区内可绕开（见上）。
+
+**验收**
+
+- `read` / `read_image` 读 `.env`、`account.db`、`~/.dsh/.credentials.yaml`、`/proc/self/environ` 全部被拒
+- `read` 读 `Templates/` 下的文件被拒（未列入白名单的默认结果）
+- `read` 能读 `Skills/consult/references/*.md`（否则 consult 跑不动 —— 这条是防"白名单写太窄"）
+- `write` 仍只能写 `Account/<user>/` 之下
+- 自动检查：扫 `agent.cordis.yml`，出现禁止工具即失败
+- DSH 进程自身不受限 → 启动与运行不受影响
+
+**为什么不选 systemd 命名空间 / 第二 OS 账号**（记录决策，避免重复讨论）
+
+| | 读白名单 | 第二 OS 账号 | systemd 命名空间 |
+|---|---|---|---|
+| 覆盖 `/proc/self/environ` | ✅ | ✅ | ❌ |
+| 跨平台（本地 macOS 也生效） | ✅ | ✅ | ❌ Linux only |
+| 需要改部署与启动方式 | ❌ | ✅ | ✅ |
+| **对当前手工启动的实例生效** | ✅ | ✅ | ❌ **完全无效** |
+| 弄崩 DSH 启动的风险 | **无** | 中 | 高（`ProtectHome` / `ProcSubset`） |
+| 造成"假装加固了"的风险 | **无** | 无 | **高** |
+
+两条决定性理由：
+
+1. systemd 命名空间**只在由 systemd 拉起时生效**。而当前 DSH 实例是手工 `dsh --profile` 启动的
+   （`Relay/adapter.py` 里没有任何 `Popen`/spawn，只有 `wait_for_instance()` 等实例自己注册）。
+   加了 unit 而不改启动方式等于没加，还会给人"已经加固"的错觉。这是原方案最大的风险。
+2. `ReadOnlyPaths=/opt/letsplaydnd` 与存档写入**直接冲突**——存档就在 `Account/<user>/Saves/`，
+   在项目根之内。必须再配 `ReadWritePaths`，漏一个就是"存档静默写失败"。
+
+读白名单不碰 DSH 进程自身的读，所以**不可能**把 DSH 自己的启动依赖掐掉——这是它与 systemd 方案最大的风险差别。
+
+**已确认**：DSH 实例连模型用的 key 存在 `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`，
+是**操作者的一把、所有用户实例共用**——按用户隔离是未来目标，当前未实现，见 §10.5。
+它落在白名单之外，因此是 P5-1 的**第一个真实目标**。
+
+#### P5-2 存档快照实现说明
+
+`SaveSnapshots(root)`，按存档 `data/` 目录各建一颗**裸库**（`git init --bare`），
+库路径 = `root/<sha1(绝对工作目录)[:16]>.git`。
+
+- 库在**工作区之外**：模型对工作区有写权限，`.git` 若在存档内则可被模型改写，快照失去意义。
+- 只快照调用方给定的 `work_tree`（通常是 `<存档>/data`），不含 `chat.db`（二进制、每回合都变，会让仓库膨胀）。
+- `commit(work_tree, msg) -> rev | None`：与"当前位置"相比无变化则返回 `None`。
+  基准点是库内 `POSITION` 文件，**不是 HEAD**——`rollback` 刻意不动 HEAD（历史不丢、可再往回滚），
+  若拿 HEAD 当基准，"回滚后本轮无改动"会被误判成有变化，生成重复提交。
+- `rollback(work_tree, rev)`：`read-tree --reset -u <rev>` + `clean -fdq`。
+  不用 `checkout <rev> -- .`（不删目标版本里不存在的文件，`clean` 也清不掉），
+  也不用 `checkout <rev>`（HEAD 会 detached）。
+- 提交用 `--allow-empty`：模型可能恰好把文件改回上个提交的样子，此时索引与 HEAD 相同，
+  普通 `commit` 直接报错，但"位置"确实移动了，必须记下。
+
+**验收结果**：22 PASS / 0 FAIL（含回滚、撤销回滚、重做、子目录、新增文件清除、空提交抑制、多存档隔离）。
+
+**遗留**：尚未接入回合流程（每回合提交、回滚入口属 P6）。
 
 ### P6 game 流程迁移
 
@@ -597,9 +833,9 @@ Flask 侧实现见 `Relay/`（1090 行），已接入 `server.py`（Blueprint �
 
 ## 9. 待验证事项
 
-- 无 approver 时沙箱提权是否失败关闭（P3）
-- 模型在极简工具面下能否稳定完成三段流程（P3）
-- `dsh2server` 在自定义 web-capable profile 下的能力集合是否满足需求（P3）
+- ~~模型在极简工具面下能否稳定完成三段流程~~ → ✅ 已由 P3.5 consult 端到端实测覆盖
+- 无 approver 时沙箱提权是否失败关闭 → **移交 P6**（需要一次被拒写入才能触发）
+- `dsh2server` 在自定义 web-capable profile 下的能力集合是否满足需求 → **移交 P6**（在完整游戏流程里才用得全）
 
 ---
 
@@ -625,7 +861,7 @@ Flask 侧实现见 `Relay/`（1090 行），已接入 `server.py`（Blueprint �
 | 长期记忆缺失 | 长期记忆 | 手册中两种方案均未落地，需单独设计 |
 | 隐藏剧情 / 章节结束 / 自定义开始 | 对应章节 | 主要是游戏设计问题，非实现问题 |
 | 添加队友 | 添加队友 | 未实现；手册建议用预制角色而非临时生成 |
-| 无免费额度开关（供无 key 用户试玩） | 免费额度 | 迁移后每用户一实例、key 自备，此项优先级可能下降 |
+| 无免费额度开关（供无 key 用户试玩） | 免费额度 | 设计意图是"每用户一实例、key 自备"，但**该意图尚未实现**，见 §10.5 |
 | 存档级 / 全局 rules 不可手动添加 | Rules | 未实现 |
 | 笔记区 MD 渲染差（尤其表格） | MD渲染 | 未实现 |
 | 同账号不可多设备登录 | 安全 | 未实现；手册判断优先级低 |
@@ -639,7 +875,10 @@ Flask 侧实现见 `Relay/`（1090 行），已接入 `server.py`（Blueprint �
 |---|---|---|
 | `FLASK_SECRET_KEY` 一钥两用，派生方式可预测 | `server.py` 的 `_fernet()`：`raw.ljust(32, b"0")[:32]` | 同一密钥既签 Session 又作 Fernet 密钥；若密钥短于 32 字节用 `0` 补齐会稀释熵。建议拆分用途 |
 | 前端 SSE 无断线续传 | `UI/js/chat-view.js` 用 `fetch` + `body.getReader()` 手动解析，非 `EventSource` | 一轮可能运行 30 秒以上，断线即丢失前半段。**已列入 P4 验收**，不算遗留 |
-| `account.db` 与 `.env` 同处项目根，均可被 DSH 进程读到 | 部署结构 | 见 §8 约束 3；迁移要求以 systemd 文件系统命名空间隔离 |
+| `account.db` 与 `.env` 同处项目根，均可被 DSH 进程读到 | 部署结构 | 见 §8 约束 3；**改由 P5-1 读白名单解决**（原定的 systemd 命名空间隔离已降级暂缓，理由见 P5-1） |
+| **RAG 对「火球术」召回不准** | `RAG/`（索引与切块） | P3.5 实测：查询 `火球术 豁免 伤害` 返回的首块虽被标注为火球术，正文却是**另一条法术**（光耀伤害、d8 缩放），**不含火球术的数值**。模型据此正确判定"未命中"并按纪律声明"非规则书引用"。属召回/切块质量问题，与迁移无关 |
+
+> RAG 召回这条值得单独留意：它直接影响「规则回答是否可信」，而且是**旧系统就存在**的问题——迁移只是让它更显眼了。按 §10.4，此处只记录不改。
 
 ### 10.4 触发修复的条件
 
@@ -648,3 +887,38 @@ Flask 侧实现见 `Relay/`（1090 行），已接入 `server.py`（Blueprint �
 - 阻塞对接（例如前端取不到必需字段）
 - 导致严重报错（进程崩溃、数据损坏）
 - 安全类问题在公网多用户场景下被实际利用
+
+### 10.5 迁移引入的行为落差（尚未补齐）
+
+> 本节记录的是**这次迁移自己引入的**行为变化，不属于 §10.3 的"旧系统问题"。
+> 排查依据是"设计意图 vs 当前代码实际行为"，不是猜测。
+
+#### 凭据未按用户隔离 —— **上线前必须解决**
+
+| | 旧路径（非 DSH） | 现状（DSH 路径） |
+|---|---|---|
+| 取 key | `get_user_api_key(username)`（`server.py:867`） | **不取**：`server.py:863-865` 在取用户 key **之前**就分流到 DSH |
+| 实际使用 | 该用户自己的 key | DSH 实例自身的凭据 = `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`（**操作者的一把**） |
+| 未配 key 的用户 | 400 `api key unavailable` | **照常可玩，费用记在操作者头上** |
+
+证据链：`server.py:824` 注释（"DSH 侧不需要 Flask 这边的用户 API Key——每个 DSH 实例用自己的凭据"）、
+`server.py:863-865` 提前 `return`、`Relay/adapter.py:113` 的 `session.create` 只传 `cwd`、
+两个 profile patch（`dsh/profile.patch.yml`、`~/.dsh/profiles/letsplaydnd/cordis.patch.yml`）均未指定模型与 key。
+
+**成因**：DSH 的凭据存储是 **DSH_HOME 级**，不是会话级。`session.create` 能选 preset、能选 model，
+但 key 来自进程的 credential store，**没有"本次会话用这把 key"的入参**。
+
+**因此"每用户一把 key"必然推导出每用户一个 DSH_HOME**（`update.md` §1.1 的 `dsh-<name>` 形态），
+它与「每用户实例自动创建 / 端口分配」是**同一件事**，必须合在一起做，不要拆成两步。
+
+**两条禁令**：
+
+1. 不可只做"没 key 就拒绝开始游戏"的门禁。那只做了一半：强制用户配 key，实际仍用操作者的 key 跑，**比现状更误导**。
+2. **半成品不得部署。** 当前状态下，任何登录用户都能消耗操作者的额度。
+
+**与 P5-1 的关系**：补齐之后，每个实例的 key 就落在**它自己的 DSH_HOME** 内，
+而那是典型的"进程必须持有、模型因此也读得到"的一类文件——P5-1 读白名单是唯一挡得住它的东西。
+两者应一起上：只做隔离没有白名单，等于每个实例都能把自己的 key 念出来。
+
+**本地测试不受此限**：本机是同一操作者，共用一把 key 无影响。
+

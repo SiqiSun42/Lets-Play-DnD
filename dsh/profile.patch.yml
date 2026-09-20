@@ -58,6 +58,11 @@
 #   export DSH2SERVER_ENDPOINT=http://127.0.0.1:5000/dsh-api
 
 # ── 本地开发需要 export 的变量 ───────────────────────────────────
+#   DSH_HOME=~/.dsh            ← **必须显式给**。venv/bin/dsh 是 Python runtime 版
+#                                （deepseek_harness_runtime），它绝不隐式使用 ~/.dsh，
+#                                不设会报 "requires an explicit DSH_HOME"。
+#                                在 DSH 会话内该变量已由 harness 设好，所以从会话里跑
+#                                不会遇到——换到普通终端才会突然失败。
 #   DSH_PRESET_DIR=/Users/<you>/.../LetsPlayDnD/dsh/agent-presets
 #   DSH_SKILLS_DIR=/Users/<you>/.../LetsPlayDnD/Skills
 #   DSH_MCP_URL=http://127.0.0.1:8790/mcp

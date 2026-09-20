@@ -40,10 +40,39 @@
   name: '@deepseek-ai/dsh-skill-filesystem'
   config:
     customSkillDirs:
-      - !!js process.env.DSH_SKILLS_DIR ?? '/opt/letsplaydnd/Skills'
+      # 优先取显式环境变量；否则回退到「启动目录 + /Skills」。
+      # 生产与本地的启动命令都是 `cd <项目根> && dsh ...`，所以这个回退两边都成立；
+      # 不能写死 /opt/letsplaydnd —— 本地那个路径不存在，会扫不到任何 skill，
+      # 模型拿不到技能目录，也就不会去加载 consult（这个坑踩过一次）。
+      - !!js process.env.DSH_SKILLS_DIR ?? (process.cwd() + '/Skills')
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
+
+# ── 读围栏（spec §6 P5-1）─────────────────────────────────────────
+# DSH 的沙箱只管**写**：三个模式（read-only / workspace-write / danger-full-access）
+# 都是关于写的，"read-only" 指的是"拒绝写"，不是"拒绝读"。任何一层都没有读路径规则。
+# 所以模型能 read .env、~/.dsh/.credentials.yaml、/proc/self/environ。
+#
+# 本插件补上那条缺失的规则：read / read_image 只允许读白名单内的路径。
+# 用 ctx.tools.guard()（单调守卫，拒绝后无法被翻案），而不是 fs 后端——
+# 不动 ctx.fs 的装配，摘掉即回到原状态。
+#
+# ⚠️ 它成立的前提是**预设内没有可执行代码**（无 shell / pwsh / 带 shell 的 subagent）。
+# 没有 shell，read 就是唯一的读路径，路径级围栏才完备。一旦引入 shell，本插件静默失效。
+# 见 dsh/plugins/fs-readguard/README.md。
+- id: fs-readguard
+  name: dsh-fs-readguard
+  config:
+    # 额外的读根。会话工作区（agent.session.header.cwd = Account/<用户名>）
+    # 由插件自动放行，不写在这里——它由 Flask 按用户设定，写死会圈错地方。
+    readRoots:
+      # 必需，不能漏：Skills/consult/SKILL.md 要求模型「用 read 工具读取对应文件」，
+      # 不给它读 consult 直接跑不动。用与上面 skill-filesystem 相同的回退表达式，
+      # 避免两处各写一份而漂移。
+      - !!js process.env.DSH_SKILLS_DIR ?? (process.cwd() + '/Skills')
+    # 刻意不列 Templates/：模板由 Flask 侧在「开局」阶段复制成存档，模型没有读写必要。
+    # 未列入即不可读，不需要为它写任何"禁止"规则——这正是白名单相对黑名单的好处。
 
 # ── 上下文压缩 ────────────────────────────────────────────────────
 # 不是模型可见的工具，是长会话的必需 housekeeping。

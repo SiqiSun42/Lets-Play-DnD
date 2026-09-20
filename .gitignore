@@ -10,3 +10,11 @@ __pycache__/
 *.py[cod]
 .DS_Store
 RAG/vector_db/
+
+# 一次性验证用的临时 DSH_HOME（见 spec.md P5-1「集成验收」）。
+# 里面会拷入 .credentials.yaml 才能调模型——绝不能提交。
+poc/
+.credentials.yaml
+
+# pnpm 在仓库根被调用时（`dsh plugin` 的 cwd 是仓库根）会留下的空 store 壳。
+.pnpm-store/

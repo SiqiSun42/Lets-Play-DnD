@@ -1,0 +1,12 @@
+{
+  "name": "dsh-fs-readguard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LetsPlayDnD 的模型文件读取白名单：read/read_image 只允许读会话工作区与显式配置的根（spec.md P5-1）",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,11 @@
+# 一次性端到端验收用的 patch —— **不是部署配置**，只用于在真实 DSH 进程里
+# 验证 fs-readguard 的读白名单确实生效。
+#
+# 用法见 spec.md P5-1「集成验收」。挂到 headless profile 上跑一次性任务：
+# headless 不加载 dsh2server，因此不会注册到中转，也就不会干扰正在运行的实例。
+#
+# 正式挂载点是 dsh/agent-presets/letsplaydnd/agent.cordis.yml，不是这里。
+
+- insert:
+    - id: fs-readguard
+      name: dsh-fs-readguard
