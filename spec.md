@@ -264,18 +264,68 @@ dsh plugin --profile <name> add github:23J1633/dsh2server
 
 ### P4 中转服务器
 
-**内容**：在 Flask 侧实现 `dsh2server` 协议 v1 服务端，覆盖规范 §12 的必做清单；实现实例注册、事件接收与转发、操作下发。
+**内容**：在 Flask 侧实现 `dsh2server` 协议 v1 服务端，覆盖规范 §12 的必做清单。
+
+**范围界定**（对照 `php/dsh-relay.php`，全文 1600 行）：
+
+| 部分 | 行数 | 是否移植 |
+|---|---|---|
+| 配置 / 基础工具 / key 白名单 | 37–176 | 是（多数由 Flask 内置替代） |
+| 状态存取 | 177–315 | **否**。实例状态改为内存，key 白名单复用 `account.db` |
+| 核心协议路由 | 316–561 | 是，主体 |
+| 管理接口 | 562–808 | 部分是 |
+| HTML 调试台 | 809–1600 | **否** |
+
+协议允许服务器无状态："服务器进程重启后，所有 dsh 会自动重连并重新推送状态"。
+
+**路由**：
+
+| 路由 | 说明 |
+|---|---|
+| `POST {base}/events` | 插件上行：`hello` / `event` / `response` / `ping` / `ack` / `bye` |
+| `GET {base}/inbox` | 插件下行：长轮询 |
+| `GET/POST {base}/keys`、`POST {base}/keys/remove` | key 白名单 |
+| `GET {base}/instances` | 实例表 |
+| `GET {base}/instances/:id/events` | 事件窗口 |
+| `POST {base}/instances/:id/request` | 下发操作 |
+| `POST {base}/instances/:id/subscribe` | 订阅 |
+
+不移植 `/pending*`（配对流程，两端均本项目控制）与 `/admin/clear`。
+
+**传输选型**：先只实现 **HTTP 长轮询**（`/events` + `/inbox`）。协议中两种载体等价，插件在 `transport: auto` 下自动回退。不引入 WebSocket 依赖。`GET {base}/ws` 返回 426 明示不支持。
+
+**模块布局**：
+
+```
+Relay/
+  __init__.py
+  protocol.py     帧类型与帮助函数
+  state.py        RelayState：实例表、事件环、inbox 队列、key 白名单
+  blueprint.py    Flask Blueprint：核心协议 + 管理接口
+  devserver.py    独立运行入口，用于验收
+```
+
+**预计规模**：约 350 行 Python，纯标准库。
+
+**约束与注意事项**：
+
+1. **必须单进程**。实例状态在内存中；多 worker 会使同一实例被分散到不同 worker。key 白名单除外，它在 `account.db`。
+2. **长轮询占用 worker**。Flask 须以 `threaded=True` 运行，否则单个长轮询阻塞整个服务。实例数增长后需考虑异步 worker。
+3. **密钥比较使用 `hmac.compare_digest`**（规范要求恒定时间比较）。
+4. **每实例维护事件环形缓冲**，按 `seq` 去重；重连时依 `hello.ack.resumeFromSeq` 补发；缓冲不足时发送 `bridge/resync`。
+5. **`bye` 标记为断开而非删除**（规范：紧接其后的重连会与删除抢跑）。
 
 **验收**：
 
 - 一个 DSH 实例能连接并出现在实例表中
-- `session/assistant-stream` 的 `reasoning-delta` 与 `text-delta` 能实时转发到前端，打字机效果与迁移前一致
+- `session/assistant-stream` 的 `reasoning-delta` 与 `text-delta` 能实时转发到前端
 - 下发 `session.prompt` 能驱动会话并收到完整回复
 - 断线后能自动重连并按 `seq` 补发，不丢事件
+- **前端 SSE 支持按 `seq` 续传**：浏览器断线重连后能补回缺失片段，不丢内容
 
 **依赖**：P3。
 
-**起点**：移植 `php/dsh-relay.php` 或对照 `examples/server.js`。
+**起点**：移植 `php/dsh-relay.php`，对照 `examples/server.js`。
 
 ### P5 安全加固
 
@@ -333,3 +383,51 @@ dsh plugin --profile <name> add github:23J1633/dsh2server
 - 无 approver 时沙箱提权是否失败关闭（P3）
 - 模型在极简工具面下能否稳定完成三段流程（P3）
 - `dsh2server` 在自定义 web-capable profile 下的能力集合是否满足需求（P3）
+
+---
+
+## 10. 遗留问题（原系统，本次不处理）
+
+来源：`Content/开发手册.md`，以及本次调研期间发现但未修复的问题。
+
+**处理原则**：下列问题**不影响迁移的正确性**，只记录、不修改。仅当某问题会阻塞对接或导致严重报错时才动手（条件见 §10.4）。
+
+### 10.1 迁移会顺带解决的
+
+| 问题 | 手册位置 | 迁移如何解决 |
+|---|---|---|
+| MCP 每次调用都要重连，耗时过长 | 工具优化 | 改为常驻的 HTTP MCP 服务（§5.1），调用不再建立连接 |
+| 工具调用未并行，RAG 等待时间长 | 工具优化 | DSH 调度器对**声明为并发安全**的工具并行分发 |
+| stage 顺序与工具分发硬编码在 Python | 本次调研 | 改为 SKILL.md 描述流程，由模型推进（§2.1） |
+
+### 10.2 迁移不解决、仍然存在的
+
+| 问题 | 手册位置 | 说明 |
+|---|---|---|
+| 战斗分支环节复杂、响应慢、中途报错无良好重启 | 战斗分支 | battle 暂缓（P7） |
+| 长期记忆缺失 | 长期记忆 | 手册中两种方案均未落地，需单独设计 |
+| 隐藏剧情 / 章节结束 / 自定义开始 | 对应章节 | 主要是游戏设计问题，非实现问题 |
+| 添加队友 | 添加队友 | 未实现；手册建议用预制角色而非临时生成 |
+| 无免费额度开关（供无 key 用户试玩） | 免费额度 | 迁移后每用户一实例、key 自备，此项优先级可能下降 |
+| 存档级 / 全局 rules 不可手动添加 | Rules | 未实现 |
+| 笔记区 MD 渲染差（尤其表格） | MD渲染 | 未实现 |
+| 同账号不可多设备登录 | 安全 | 未实现；手册判断优先级低 |
+| XSS 防护不完整（页面未加载 DOMPurify） | 防护 | 未实现。**迁移后风险不降**：模型输出经中转进入前端，仍需同一套清理 |
+| 无 CSRF token | 防护 | 未实现 |
+| 无 HTTPS / Secure Cookie / 安全响应头 / 频率限制 | 防护 | 未实现 |
+
+### 10.3 本次调研新发现（原系统问题，未修）
+
+| 问题 | 位置 | 影响 |
+|---|---|---|
+| `FLASK_SECRET_KEY` 一钥两用，派生方式可预测 | `server.py` 的 `_fernet()`：`raw.ljust(32, b"0")[:32]` | 同一密钥既签 Session 又作 Fernet 密钥；若密钥短于 32 字节用 `0` 补齐会稀释熵。建议拆分用途 |
+| 前端 SSE 无断线续传 | `UI/js/chat-view.js` 用 `fetch` + `body.getReader()` 手动解析，非 `EventSource` | 一轮可能运行 30 秒以上，断线即丢失前半段。**已列入 P4 验收**，不算遗留 |
+| `account.db` 与 `.env` 同处项目根，均可被 DSH 进程读到 | 部署结构 | 见 §8 约束 3；迁移要求以 systemd 文件系统命名空间隔离 |
+
+### 10.4 触发修复的条件
+
+出现以下任一情况时才动这些遗留问题：
+
+- 阻塞对接（例如前端取不到必需字段）
+- 导致严重报错（进程崩溃、数据损坏）
+- 安全类问题在公网多用户场景下被实际利用

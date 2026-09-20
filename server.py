@@ -15,6 +15,11 @@ from datetime import datetime, timezone, timedelta
 # 注册和修改密码时使用 Werkzeug 的 generate_password_hash, 登录时通过 check_password_hash 验证
 from werkzeug.security import generate_password_hash, check_password_hash
 
+# DSH 中转服务器（dsh2server 协议 v1 的服务端实现）。见 spec.md §6 P4。
+from Relay import RelayState, SqliteKeyStore
+from Relay.blueprint import create_blueprint as create_relay_blueprint
+from Relay.sse import iter_frontend as relay_iter_frontend
+
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 app = Flask(__name__)
@@ -26,6 +31,14 @@ AUTO_LOGIN_ADMIN = False
 USER_TEMPLATE_DIR = ROOT / "Templates" / "user"
 GAME_TEMPLATE_DIR = ROOT / "Templates" / "game"
 GAME_TEMPLATE_META = GAME_TEMPLATE_DIR / "meta.json"
+
+# ── DSH 中转服务器 ────────────────────────────────────────────────
+# 协议端点（/events、/inbox 与管理接口）由 Relay/blueprint.py 提供。
+# 必须与 Flask 同进程：实例状态保存在内存中，多 worker 会让同一实例分散到不同进程。
+RELAY_BASE_PATH = os.environ.get("DSH_RELAY_BASE_PATH", "/dsh-api")
+relay_state = RelayState(SqliteKeyStore(DB_PATH))
+app.register_blueprint(create_relay_blueprint(relay_state, base_path=RELAY_BASE_PATH))
+app.extensions["dsh_relay_state"] = relay_state
 
 
 def load_game_templates() -> list:
@@ -1066,6 +1079,52 @@ def game_history():
         "messages": data["messages"],
         "has_more": data["has_more"],
     })
+
+# ── DSH：前端流式端点 ─────────────────────────────────────────────
+
+def resolve_dsh_instance(username: str) -> str | None:
+    """该用户名下在线的 DSH 实例 id；没有则返回 None。
+
+    归属关系来自 account.db 的 dsh_instances 表（key → username）。
+    P4 的实例管理落地前，该表由管理员手工登记；未登记的用户一律拒绝。
+    """
+    return relay_state.instance_for_user(username)
+
+
+@app.post("/api/dsh/stream")
+def dsh_stream():
+    """把 DSH 会话的流式输出转成前端现有事件格式（SSE）。
+
+    请求体：``{ sessionId, lastSeq? }``。
+    ``lastSeq`` 用于断线续传：携带上次收到的 SSE ``id``，中转会补齐缺口。
+    """
+    username = session.get("username")
+    if not username:
+        return jsonify({"error": "not logged in"}), 401
+
+    body = request.get_json() or {}
+    dsh_session_id = (body.get("sessionId") or "").strip()
+    if not dsh_session_id:
+        return jsonify({"error": "empty sessionId"}), 400
+
+    instance_id = resolve_dsh_instance(username)
+    if not instance_id:
+        # 没有绑定实例的账号一律拒绝，不放行（fail closed）
+        return jsonify({"error": "no dsh instance bound to this account"}), 403
+
+    try:
+        since_seq = int(body.get("lastSeq") or 0)
+    except (TypeError, ValueError):
+        since_seq = 0
+
+    return Response(
+        stream_with_context(relay_iter_frontend(
+            relay_state, instance_id, dsh_session_id, since_seq=since_seq,
+        )),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
 
 @app.get("/Account/<path:filename>")
 def account_files(filename):
