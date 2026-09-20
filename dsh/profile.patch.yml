@@ -1,0 +1,58 @@
+# LetsPlayDnD 的 DSH profile 覆盖层（spec.md §6 P3）
+#
+# 用法（每个用户的 DSH 实例）：
+#   dsh --profile web --patch /opt/letsplaydnd/dsh/profile.patch.yml
+#
+# 路径类配置用 !!js 读环境变量并回退到生产默认值，因此同一份文件在本地开发
+# 与服务器上都能直接用（本地要 export 的变量见文件末尾）。
+#
+# 注意：patch 会**整体替换**目标行的 `config`，不是逐键合并。下面凡覆盖
+# `config` 的地方，都只依赖该组件 schema 里的默认值。
+
+# ── 1. agent preset roster ────────────────────────────────────────
+# ⚠️ 工具面裁剪**不在这里**。
+#
+# web 组合（@deepseek-ai/dsh-web-app）把 host 平面的工具行全部禁用了
+# ——tool-bash / tool-pwsh / tool-jobs / tool-fs / tool-fs-search /
+# tool-skill / tool-subagent* / tool-workflow / tool-todo / tool-goal /
+# tool-ralph / tool-web 在组合结果里都已是 disabled: true，改由 agent preset
+# 提供。因此在 profile patch 里再写一遍 disabled: true 是 no-op。
+#
+# 真正的工具面定义在 dsh/agent-presets/letsplaydnd/agent.cordis.yml。
+# 本行只负责把那个目录挂进 roster 并设为部署默认。
+- id: agent-presets
+  config:
+    default: letsplaydnd
+    roots:
+      - path: !!js process.env.DSH_PRESET_DIR ?? '/opt/letsplaydnd/dsh/agent-presets'
+        trust: system
+
+# ── 2. MCP 工具 ──────────────────────────────────────────────────
+# 注册进 host 平面的 tools 注册表，因此 preset 的 agent 也能看到。
+# 工具名：mcp__letsplaydnd__search_rules / mcp__letsplaydnd__roll_dice
+- insert:
+    - id: mcp-letsplaydnd
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: letsplaydnd
+        transport: streamable-http
+        url: !!js process.env.DSH_MCP_URL ?? 'http://127.0.0.1:8790/mcp'
+
+# ── 3. 写围栏 ────────────────────────────────────────────────────
+# 只设 mode。不设 workspaceRoot：普通 agent 调用会用**会话的不可变 cwd**
+# 作为可写根，而会话 cwd 由 Flask 建会话时指定为存档目录，
+# 因此围栏天然按存档隔离。
+- id: sandbox-policy
+  config:
+    mode: workspace-write
+
+# ── 4. dsh2server（与 Flask 的桥接）──────────────────────────────
+# 刻意不覆盖它的 config：该插件有大量带默认值的键，而 patch 是整体替换，
+# 覆盖会丢掉它们。它的 endpoint 走环境变量或 GUI 配置：
+#   export DSH2SERVER_ENDPOINT=http://127.0.0.1:5000/dsh-api
+
+# ── 本地开发需要 export 的变量 ───────────────────────────────────
+#   DSH_PRESET_DIR=/Users/<you>/.../LetsPlayDnD/dsh/agent-presets
+#   DSH_SKILLS_DIR=/Users/<you>/.../LetsPlayDnD/Skills
+#   DSH_MCP_URL=http://127.0.0.1:8790/mcp
+#   DSH2SERVER_ENDPOINT=http://127.0.0.1:5000/dsh-api

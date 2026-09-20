@@ -71,7 +71,7 @@ DSH 实例（每用户一个，web-capable profile）
   RAG/
   Dice/
   Skills/
-    consult-zh/
+    consult/
       SKILL.md
       references/
   MCP/
@@ -147,10 +147,29 @@ patch 内容：`customSkillDirs`、工具 allowlist、MCP 服务地址、模型�
 
 ### 5.2 Skills
 
-- 位置：`Skills/consult-zh/`
-- 结构：`SKILL.md` 加 `references/` 子树
-- `references/` 下文件**不自动进入上下文**，由模型通过 `read` 获取；SKILL.md 正文须给出资源路径指引
-- 语言隔离：中文与英文为独立目录（`consult-zh/`、`consult-en/`），不在同一 `SKILL.md` 内做语言分支
+**位置**：`Skills/<name>/`，与项目并列存放。当前为 `Skills/consult/`。
+
+**结构**：
+
+```
+Skills/
+  consult/
+    SKILL.md            流程总纲
+    references/         各阶段指令，按需读取
+      decision.md
+      rag-query.md
+      output.md
+  game/                 与 consult 并列（P6）
+    SKILL.md
+    references/
+```
+
+**约束**：
+
+- 目录式 bundle：被扫描的根下直接是 `<name>/SKILL.md`；**不支持嵌套** `**/SKILL.md`
+- frontmatter 必填 `name`（kebab-case，且与目录同名）与 `description`；可选 `whenToUse`、`disable-model-invocation`、`user-invocable`
+- **`references/` 下的文件不会自动进入上下文。** skill 工具返回 `<skill_resources>` 块，给出该 skill 的**绝对基目录**并要求按基目录解析相对路径；模型须自行用 `read` 读取。因此 SKILL.md 正文必须显式写明要读哪些文件
+- 语言隔离：中文与英文为独立目录，不在同一 `SKILL.md` 内做语言分支。当前仅有 `consult/`；引入英文时再定命名（见 §2.2 暂缓项）
 
 ### 5.3 DSH profile
 
@@ -169,6 +188,8 @@ patch 内容：`customSkillDirs`、工具 allowlist、MCP 服务地址、模型�
 | `dsh2server` | 与 Flask 的桥接 |
 
 **不挂载**：`dsh-tool-bash`、`dsh-tool-pwsh`、`dsh-tool-jobs`、`dsh-tool-fs-search`、`dsh-tool-subagent`、`dsh-tool-subagent-control`、`dsh-tool-workflow`、`dsh-tool-todo`、`dsh-tool-goal`、`dsh-tool-ralph`、`dsh-tool-web`。
+
+> ⚠️ `skill-filesystem` 与 `tool-skill` 两行在 web 组合下**默认被禁用**（该组合让 agent preset 接管本地 skill 发现）。要用 `customSkillDirs` 指向项目 `Skills/`，必须显式重新启用 host 行或改配 preset——机制与做法见 §6 P3。
 
 **沙箱配置**：`mode: workspace-write`，`workspaceRoot` 指向当前存档目录。
 
@@ -216,6 +237,20 @@ dsh plugin --profile <name> add github:23J1633/dsh2server
 
 ## 6. 实施阶段
 
+**阶段总览**（依赖关系与编号顺序不完全一致：P4 先于 P3 完成）：
+
+| 阶段 | 内容 | 依赖 | 状态 |
+|---|---|---|---|
+| P0 | 技术验证 | — | ✅ 已完成 |
+| P1 | MCP 服务 | — | ✅ 已完成 |
+| P2 | consult skills | P1 | ✅ 已完成 |
+| P3 | DSH profile | P1、P2 | 待做 |
+| **P3.5** | **consult 适配层**（新增） |  P2、P3、P4 | 待做 |
+| P4 | 中转服务器 | — | ✅ 已完成 |
+| P5 | 安全加固 | P3.5 | 待做 |
+| P6 | game 流程迁移 | P5 | 待做 |
+| P7 | battle | — | 暂缓 |
+
 ### P0 技术验证 —— 已完成
 
 **内容**：以独立 `DSH_HOME` 启动 SDK profile，通过 Python SDK 提交提示词，记录 `session.event` 输出。
@@ -262,28 +297,149 @@ dsh plugin --profile <name> add github:23J1633/dsh2server
 - systemd 单元需在目标 Linux 主机上用 `systemd-analyze verify` 复核
 - 常驻内存未实测（本机 `ps` 被沙箱禁用）；建议在服务器上用 `systemd-cgtop` 确认，该数值决定「N 个 DSH 实例共享一份 MCP」的收益
 
-### P2 consult skills
+### P2 consult skills —— 已完成
 
-**内容**：编写 `Skills/consult-zh/`，迁移 `Prompts/consult/` 内容至 `references/`。
-
-**验收**：本地 DSH 完成「判断 → 检索 → 输出」，规则引用正确。
+**内容**：编写 `Skills/consult/`，迁移 `Prompts/consult/` 内容至 `references/`。
 
 **依赖**：P1。
 
+**结果**：
+
+```
+Skills/consult/
+  SKILL.md              流程总纲（原 agent 的编排）
+  references/
+    decision.md         判断是否需要检索
+    rag-query.md        关键词改写后调用 search_rules
+    output.md           输出与规则引用
+```
+
+`Skills/rag-query/` 已删除（内容并入 `references/rag-query.md`）；`Prompts/consult/` 按清理策略保留（见 §7）。
+
+| 项 | 结果 |
+|---|---|
+| 结构校验 | ✅ frontmatter 合法、`name` 为 kebab-case 且与目录同名、无嵌套 `SKILL.md` |
+| 可被发现 | ✅ `consult` 出现在会话的 skill 目录中 |
+| 热加载 | ✅ 修改 skill 无需重启 |
+| **references 可读** | ✅ skill 工具返回 `<skill_resources>` 块，给出**绝对基目录**并要求按基目录解析相对路径；实测可读 |
+
+**要点**：`references/` 下的文件**不会自动进入上下文**，SKILL.md 必须显式要求模型用 `read` 读取。此点已实测确认。
+
+**待补**：完整「判断 → 检索 → 输出」链路需 `search_rules` 工具可用，属 P3 验收。
+
 ### P3 DSH profile
 
-**内容**：编写 `dsh/profile.patch.yml`，基于 web-capable profile，加入 `dsh2server`。
+**内容**：编写 `dsh/profile.patch.yml`，基于 web-capable profile，包含四项：
 
-**验收**：
+1. **工具面裁剪** —— 只挂 `dsh-tool-fs`、`dsh-tool-skill`、沙箱相关与 `dsh-mcp-client`；不挂 shell / subagent / workflow / web 等
+2. **skill 发现** —— 配置 `customSkillDirs` 指向 `Skills/`
+3. **MCP 工具** —— 安装并配置 `dsh-mcp-client` 指向 P1 的服务
+4. **`dsh2server`** —— 与 Flask 的桥接
+
+#### ⚠️ skill 发现的关键机制（P2 实测发现）
+
+web profile **禁用了 host 层的 `skill-filesystem` 与 `tool-skill`**：
+
+> `@deepseek-ai/dsh-web-app/cordis.patch.yml`：the base host `skill-filesystem` row is disabled here (**presets own local discovery**) … `tool-skill` is what a preset mounts to give its agent the catalog and loader at all.
+
+skill 注册表是 **host + per-scope 分层**的：host 行注册进 global 层，preset 行注册进该 preset 层，agent 读到的是沿 scope 链合并后的目录。
+
+因此有两种做法：
+
+| 做法 | 说明 |
+|---|---|
+| **A** 重新启用 host 行 | patch 中写 `- id: skill-filesystem` + `disabled: false` + `customSkillDirs`；注册进 global 层，全部 preset 共享 |
+| **B** 配置 agent preset | 在 preset 内挂 `skill-filesystem` 与 `tool-skill`；每个 preset 可有各自的 skill 集 |
+
+本地验证用的是 A（改 `~/.dsh/profiles/web/cordis.patch.yml`）。生产应随 profile / preset 一并固化。
+
+#### 验收
 
 - 模型可见工具恰为 `read` / `write` / `edit` / `skill` / `mcp__*`
 - 工作区外写入返回拒绝
 - 沙箱模式不可由模型自行提升
-- 模型在极简工具面下完成一次三段流程
+- `search_rules` 与 `roll_dice` 可被模型调用
+- **模型完成一次完整的三段流程（判断 → 检索 → 输出），规则引用正确**
+- skill 目录中只出现预期 skill
 
 **依赖**：P1、P2。
 
-### P4 中转服务器
+**结果 —— 已实现并本地验证**
+
+产物：
+
+```
+dsh/
+  profile.patch.yml                              profile 覆盖层
+  agent-presets/letsplaydnd/
+    preset.yml                                   名单元数据
+    agent.cordis.yml                             ★ 工具面真正定义在这里
+  units/letsplaydnd-mcp.service
+```
+
+`profile.patch.yml` 负责三件事：把 preset 目录挂进 roster 并设为部署默认、插入 MCP 行、设沙箱模式。
+
+| 验证项 | 结果 |
+|---|---|
+| preset 被发现 | ✅ 出现在 preset 名单中 |
+| **工具面裁剪** | ✅ 模型自报可用工具恰为 `read` / `write` / `edit` / `read_image` / `skill`——无 shell、无 web、无 subagent、无 workflow、无 todo/goal |
+| preset 挂载（含压缩组） | ✅ 正常运行，无错误 |
+| MCP 工具 | ⏳ 需带 `--patch` 重启后验证 |
+| 沙箱 `workspace-write` | ⏳ 同上 |
+
+#### ⚠️ 三个实现坑（都已踩过）
+
+1. **工具面由 agent preset 决定，不是 profile patch。**
+   web 组合把 host 平面的工具行**全部禁用**，改由 preset 提供。因此在 patch 里写 `disabled: true` 是 no-op——第一版 patch 就犯了这错。真正要改的是 `agent.cordis.yml`。
+
+2. **preset 发现不跟随符号链接。**
+   在 `~/.dsh/.agent-presets/` 放 symlink 不会被识别；必须是实体目录。（配置 `roots` 指向项目目录时不受影响。）
+
+3. **`@deepseek-ai/dsh-mcp-client` 的两个坑。**
+   一是不声明 `dsh.bundle`，装它是普通依赖，靠 `insert` 行激活；二是**必须钉版本**——`pnpm add @deepseek-ai/dsh-mcp-client` 会拉到陈旧的 `0.0.1-rc.1`，而 `dsh` 自带的是 `0.1.5-rc.2`：
+
+   ```bash
+   dsh plugin --profile <name> add '@deepseek-ai/dsh-mcp-client@0.1.5-rc.2'
+   ```
+
+**注意**：bundle 变更**需要重启** DSH。
+
+#### 上下文压缩不能省
+
+preset 里挂了 `compaction` 组（`compaction-basic` + `command-compact` + `tool-result-pruner`）。
+它不是模型可见的工具，所以不违反「最小工具面」；但不挂它，上下文会随回合无限增长，
+最终模型调用直接失败——旧系统是靠 `history[-20:]` 手动截断回避这个问题的。
+
+---
+
+### P3.5 consult 适配层（新增）
+
+**来源**：P2 完成后发现，原 P0–P7 遗漏了这一环——前端调用的是 `/api/consult/message/stream`，而 DSH 流式端点是 `/api/dsh/stream`，两者之间没有连接。
+
+**目标**：让**前端零改动**地走 DSH。做法不是改前端，而是让 `/api/consult/message/stream` 内部改走 DSH。
+
+**内容**：
+
+1. **会话映射** —— 维护 (用户名, 存档) → DSH 会话 id 的对应关系；首次访问时创建 DSH 会话并落库。存放位置：`account.db`（可与 `dsh_instances` 同库另建表）
+2. **兼容端点** —— `POST /api/consult/message/stream` 在 DSH 开关打开时：
+   - 由 `relay_state.instance_for_user()` 解析该用户的实例（无则拒绝）
+   - 解析或创建对应的 DSH 会话
+   - 订阅该会话并下发提示词
+   - 用 `Relay/sse.py` 的 `iter_frontend()` 产出前端既有事件格式
+3. **开关** —— 新旧路径并存，按用户或全局开关切换（见 §7）
+
+**验收**：
+
+- **前端一行未改**，consult 在浏览器中可正常提问、流式出字、显示思考
+- 规则类问题能触发 `search_rules` 并引用规则书原文
+- 输出事件与旧路径一致（`thinking` / `content` / `new_bubble` / `end_bubble` / `done`）
+- 用户未绑定 DSH 实例时明确报错，而不是静默失败
+
+**依赖**：P2、P3、P4。
+
+**这是「`python server.py` 之后就能在前端测 consult」的分界线**——此阶段完成后才成立。
+
+### P4 中转服务器 —— 已完成
 
 **内容**：在 Flask 侧实现 `dsh2server` 协议 v1 服务端，覆盖规范 §12 的必做清单。
 
@@ -348,9 +504,7 @@ Relay/
 
 **起点**：移植 `php/dsh-relay.php`，对照 `examples/server.js`。
 
----
-
-### P4 结果 —— 已完成
+**结果**：
 
 Flask 侧实现见 `Relay/`（1090 行），已接入 `server.py`（Blueprint 注册于 `/dsh-api`），并在真实 DSH 实例上端到端验证：
 
@@ -406,6 +560,14 @@ Flask 侧实现见 `Relay/`（1090 行），已接入 `server.py`（Blueprint �
 4. battle 不变更
 
 回退通过开关完成，无需 revert 代码。代码级回退锚点：tag `v0.9-working`。
+
+### 7.1 清理策略
+
+**`Prompts/` 下的文件在整个项目实测完成前一律保留**，即使内容已迁入 `Skills/`。
+新路径尚未全量验证，旧文件是回退与对照的依据；待 P6（game）也测通后再统一清理。
+
+`Skills/` 内部的重叠文件不受此限：`Skills/rag-query/` 因与 `consult/references/rag-query.md`
+高度重叠且会导致 skill 目录出现两个技能，已在 P2 删除（内容已迁入，git 中可恢复）。
 
 ---
 

@@ -1,0 +1,70 @@
+# LetsPlayDnD 的 agent preset：极简工具面（spec.md §6 P3）
+#
+# 为什么工具面在这里而不在 profile patch 里：web 组合（@deepseek-ai/dsh-web-app）
+# 把 host 平面的工具行**全部禁用**，改由 agent preset 提供。所以在 profile patch
+# 里写 `disabled: true` 是 no-op，真正决定工具面的是这份文件。
+#
+# 只给两类能力：
+#   1. 文件读写 —— tool-fs（read / write / edit）
+#   2. 技能加载 —— skill-filesystem + tool-skill
+# 规则检索（search_rules）与骰子（roll_dice）由 host 平面的 MCP 行提供，
+# 注册进 host 的 tools 注册表，preset 不需要再挂。
+#
+# 刻意不挂：shell（bash / pwsh）、后台任务、文件搜索、子代理、工作流、
+# todo、goal、ralph、web、plan mode。
+# 最小工具面是「工具级读围栏完备」的前提（spec §8 约束 1）——没有 shell，
+# read 就是唯一的读路径，路径级围栏才成立。
+
+# ── 身份 ──────────────────────────────────────────────────────────
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: >-
+      You are a Dungeon Master assistant for a D&D 5e play-by-chat game.
+    suffix: Your working directory is {{cwd}}.
+
+# ── 文件 ──────────────────────────────────────────────────────────
+
+# 唯一的文件能力，也是唯一的变更通道。
+# 写围栏由 host 平面的 sandbox-policy 决定（workspace-write），
+# 可写根 = 会话的 cwd = 存档目录。
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+# ── 技能 ──────────────────────────────────────────────────────────
+
+# skill 注册表是 host + per-scope 分层的：这里的行注册进本 preset 的层。
+# customSkillDirs 指向项目的 Skills/，与全局注册的 provider 合并成模型看到的目录。
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - !!js process.env.DSH_SKILLS_DIR ?? '/opt/letsplaydnd/Skills'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── 上下文压缩 ────────────────────────────────────────────────────
+# 不是模型可见的工具，是长会话的必需 housekeeping。
+# 不挂它，上下文会随回合无限增长，最终模型调用直接失败——
+# 旧系统是靠 `history[-20:]` 手动截断回避这个问题的。
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024

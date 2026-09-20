@@ -1,0 +1,3 @@
+name: LetsPlayDnD
+description: 龙与地下城跑团 Agent：只读写游戏文件，规则检索走本地 RAG。
+order: 0
