@@ -233,13 +233,34 @@ dsh plugin --profile <name> add github:23J1633/dsh2server
 
 **遗留**：P0 的验收项「模型在极简工具面下完成三段流程」依赖 P3，移至 P3 验收。
 
-### P1 MCP 服务
+### P1 MCP 服务 —— 已完成
 
 **内容**：实现 `MCP/mcp_server.py`（两个工具）与 systemd 单元。
 
 **验收**：两个工具可经 MCP 调用；进程常驻；RAG 仅加载一次。
 
 **依赖**：无。
+
+**结果**：
+
+| 项 | 结果 |
+|---|---|
+| 工具 schema | 与原 `Tools/consult/rag_tools_zh.py`、`Tools/dice/dice_tool_zh.py` 的定义完全一致 |
+| `roll_dice` 输出格式 | 与原执行逻辑逐字一致（`骰子使用者：…，类型：…，数量和面数：NdM，结果：[…]`） |
+| `search_rules` 输出格式 | 含 `[context_label]` 前缀，与原逻辑一致；返回真实规则内容 |
+| **RAG 仅加载一次** | 首次调用 10.2 s（加载 embedding 模型），第二次 **0.2 s** |
+| 服务 | Streamable HTTP，监听 `127.0.0.1:8790`，路径 `/mcp` |
+
+**实现要点**：
+
+- `mcp` 2.x 将 `FastMCP` 更名为 `MCPServer`（`mcp.server.mcpserver`），Streamable HTTP 用 `streamable_http_app()` + uvicorn
+- `RAG` 在工具函数内惰性 import：进程启动轻量，模型在首次调用时载入并常驻
+- 产物：`MCP/mcp_server.py`、`dsh/units/letsplaydnd-mcp.service`
+
+**遗留**：
+
+- systemd 单元需在目标 Linux 主机上用 `systemd-analyze verify` 复核
+- 常驻内存未实测（本机 `ps` 被沙箱禁用）；建议在服务器上用 `systemd-cgtop` 确认，该数值决定「N 个 DSH 实例共享一份 MCP」的收益
 
 ### P2 consult skills
 
@@ -326,6 +347,27 @@ Relay/
 **依赖**：P3。
 
 **起点**：移植 `php/dsh-relay.php`，对照 `examples/server.js`。
+
+---
+
+### P4 结果 —— 已完成
+
+Flask 侧实现见 `Relay/`（1090 行），已接入 `server.py`（Blueprint 注册于 `/dsh-api`），并在真实 DSH 实例上端到端验证：
+
+| 项 | 结果 |
+|---|---|
+| 前端事件产出 | 179 条（`new_bubble` ×1、`thinking` ×138、`content` ×38、`end_bubble` ×1、`done` ×1） |
+| `done.content` 与增量拼接 | 一致 |
+| SSE `id:` | 每条都带，支持续传 |
+| key 白名单 | 落 `account.db` 的 `dsh_instances` 表；`username` 承载归属 |
+| 鉴权 | 未登录 401、缺 `sessionId` 400、未绑定实例 403（fail closed） |
+| 断线恢复 | 插件在 relay 重启后自动重连 |
+| 路由共存 | `/dsh-api/*` 未被 `/<path:filename>` 兜底抢占 |
+
+**遗留**：
+
+- 前端尚未消费 `id:`；续传需前端配合（记录 `lastSeq` 重连，或改用 `EventSource`）
+- 每用户实例的自动创建与端口分配待 P3 落地后补；当前实例由管理员手工登记在 `dsh_instances`
 
 ### P5 安全加固
 

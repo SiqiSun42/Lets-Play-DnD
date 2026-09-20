@@ -1,0 +1,24 @@
+[Unit]
+Description=Let's Play DnD 工具 MCP 服务（search_rules / roll_dice）
+Documentation=file:/opt/letsplaydnd/spec.md
+After=network.target
+Before=letsplaydnd.service
+
+[Service]
+Type=simple
+User=letsplaydnd
+WorkingDirectory=/opt/letsplaydnd
+ExecStart=/opt/letsplaydnd/venv/bin/python /opt/letsplaydnd/MCP/mcp_server.py \
+    --host 127.0.0.1 --port 8790 --log-level info
+
+# 常驻进程：崩溃后自动拉起。RAG 的 embedding 模型加载较慢（实测首次约 10s），
+# 因此不要频繁重启——重启会让下一个请求重新付出这个代价。
+Restart=on-failure
+RestartSec=3
+
+# 启动即监听 127.0.0.1，无需对外暴露。
+# 注意：本服务与 DSH 实例不同，不需要读写存档，也不需要 FLASK_SECRET_KEY。
+# 更严格的读隔离（InaccessiblePaths 等）属于 spec.md 的 P5，届时一并处理。
+
+[Install]
+WantedBy=multi-user.target
