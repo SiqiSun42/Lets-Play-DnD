@@ -347,6 +347,7 @@ Skills/
 | **`chat.db` 落库** | 旧系统每回合把 user/assistant 写进存档的 `chat.db`，**前端的存档历史与会话列表从那里读**。DSH 的会话记录在自己的 session 存储里，**不是一回事**。需要像 consult 那样用 `persist=` 回调写回，**否则前端存档历史是空的** |
 | **`end_bubble`** | **已裁决：本流程不发**（不是待办）。前端 `chat-view.js` 只认 `thinking` / `content` / `end_bubble` / `done` / `error`，**工具调用根本不渲染**——所以 ④ 更新阶段不会往气泡里追加任何东西，不需要在它之前封口；`done` 有兜底收尾（`:703` `if (!bubbleClosed)`）；发送在流式开始时就被 `setChatSendBusy(true)` 锁住，本轮 `done` 之前玩家发不出下一条，不存在"第二轮内容塞进同一个气泡"的竞态；consult 已经这么跑在生产上。`new_bubble` 的用途（战斗"另起气泡"）随战斗一起移除。事件留在前端不动 |
 | **SSE 格式** | 前端解析器要求**每个块以 `data:` 开头**（`chat-view.js:678`）。`seq` 不能作为独立的 `id:` 行发出 |
+| **正文只发一段** ✅ 已实现 | 前端把整轮的 `content` 分片按顺序拼成**同一个气泡**，所以"第一次工具调用前说的那句计划"会粘在正文最前面（实测：正文首句是 `I'll start by loading the game flow references…`；会话日志里它是 `text` 类型、不是 `reasoning`——**是模型自己写进正文通道的**，前端与映射都没错）。`Relay/sse.py` 因此按 `step` 缓冲正文，**只发"最后一个产生过正文的 step"那一段**，之前各段整段丢弃。<br>⚠️ 不能取"最后一个 step"：本流程是 ③生成正文 → ④更新存档（工具调用），正文**之后**还会再调工具。<br>代价：正文不再逐字流式（思考仍实时），改为回合末一次出现——换来的是过程话**根本不会露给玩家**（而不是先显示再擦掉）。配套提示词两处：skill 的「幕后与台前」加了一句、preset 的 persona 加了一句 |
 | **存档创建** | `server.py` 建存档时拷贝 `Templates/game/*`，并把模板的 `title` 与 `in_game_language` 拷入新存档 meta。**保留 `in_game_language`**（§9.2.3） |
 
 ---

@@ -247,12 +247,24 @@ class UserInstances:
             if src.is_dir():
                 farm.symlink_to(src)
             else:
-                # **不是必须预先存在**：DSH 每次启动 profile 时会为它的 DSH_HOME 自愈这个槽
-                # （`healProfilesModuleFallback` 建的就是 `<DSH_HOME>/profiles/node_modules`）。
-                # 部署侧还没启动过任何 profile 时这里就是空的——不能因此拒绝起实例。
-                # （踩过：服务器上只跑过 `--dump-config`，槽还不存在，于是实例永远起不来。）
-                print(f"[instances] {cfg.profiles_source} 下暂无 node_modules，"
-                      f"留给实例启动时自愈：{farm}", flush=True)
+                # **这是硬前提，不能让实例自愈**（踩过两次，第一次我还判断错了）：
+                # DSH 的 bundle（`@deepseek-ai/dsh-base` / `dsh-web-app`）和一部分依赖
+                # （如 `@deepseek-ai/dsh-scope`）**不在 profile 自己的 node_modules 里**，
+                # 由共享兜底槽 `<profiles_source>/node_modules` 提供；
+                # 而 profile 的 node_modules 是符号链接到共享那份，**Node 解析用的是真实路径**，
+                # 往上的 node_modules 查找最终落在共享的 `profiles/` 下——
+                # 所以实例自己 heal 的是它自己 home 里那份，救不了这里。
+                # 报错要带修法，否则只会看到实例日志里一句 ERR_MODULE_NOT_FOUND。
+                heal_home = cfg.profiles_source.parent
+                raise RuntimeError(
+                    f"部署侧还没有模块兜底槽：{src}\n"
+                    f"  它提供 DSH 的 bundle 与部分依赖，实例的 profile 依赖它——不能省。\n"
+                    f"  一次性修法：在部署机上 `cd ~`（**别在仓库目录**：那里的 .env 含 DSH_*，"
+                    f"DSH 会拒绝加载）后跑一次\n"
+                    f"    DSH_HOME={heal_home} {cfg.dsh_bin} --profile {cfg.profile} "
+                    f"--host 127.0.0.1 --port 0 --no-open\n"
+                    f"  看到 `dsh web:` 起来就可以 Ctrl+C：它在启动前会先把这个槽铺好。"
+                )
 
         profile_dir = profiles / cfg.profile
         profile_dir.mkdir(exist_ok=True)

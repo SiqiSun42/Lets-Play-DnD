@@ -61,10 +61,11 @@ def frame_to_frontend(ev: dict) -> list[dict]:
             return []
         chunk = frame.get("chunk") or {}
         ctype = chunk.get("type")
+        # `step` 随载荷带出去：正文要按 step 分组（见 iter_frontend 的说明）。
         if ctype == "reasoning-delta" and chunk.get("text"):
-            return [{"type": EV_THINKING, "delta": chunk["text"]}]
+            return [{"type": EV_THINKING, "delta": chunk["text"], "step": frame.get("step")}]
         if ctype == "text-delta" and chunk.get("text"):
-            return [{"type": EV_CONTENT, "delta": chunk["text"]}]
+            return [{"type": EV_CONTENT, "delta": chunk["text"], "step": frame.get("step")}]
         # block-start / block-end / tool-call-delta / usage / finish
         # 暂不向前端暴露，留待需要工具卡片时再补。
         return []
@@ -109,15 +110,37 @@ def iter_frontend(state, instance_id: str, session_id: str,
     ``since_seq`` 用于续传：从该序号之后重放，再继续跟随。
 
     终止条件：收到该会话的 ``session/status = idle``、实例消失、或整体超时。
+
+    **正文只发一段，而且是"最后一个产生过正文的 step"那一段。**
+
+    为什么不能每来一段 text 就发一段：模型在多步自主流程里常会在**第一次工具调用前**
+    说一句"我先把参考文件读进来"——那是过程话，不该进正文；而前端会把整轮的 content
+    分片按顺序拼成**同一个气泡**，于是过程话就粘在正文最前面（实测症状：
+    正文第一句是一句英文计划）。所以这里按 step 缓冲正文，**一旦出现更靠后的 step
+    也产生正文，就把之前那段整个丢掉**。
+
+    为什么不是"最后**一个 step** 的正文"：本流程是 **③生成正文 → ④更新存档（工具调用）**，
+    正文**之后**还会再调工具——所以正文往往不是最后一步，而是"最后一个有正文的步"。
+
+    代价：正文不再逐字流式（思考仍然实时流式），它在回合末**一次**出现。换来的好处是
+    过程话**根本不会露给玩家**（而不是先显示再擦掉）。
     """
     import time
 
     deadline = time.monotonic() + overall_timeout_s
     seq = int(since_seq or 0)
-    content_parts: list[str] = []
     thinking_parts: list[str] = []
+    # 按 step 缓冲正文：只留最后那个产生过正文的 step。
+    text_by_step: dict = {}
+    last_text_step = None
     settled = False
     seen_any = False
+
+    def take_final_content() -> str:
+        """取最后那段正文；没有就返回空串。"""
+        if last_text_step is None:
+            return ""
+        return text_by_step.get(last_text_step, "")
 
     while time.monotonic() < deadline:
         got = state.wait_events(instance_id, since=seq, wait_ms=idle_timeout_ms)
@@ -143,14 +166,30 @@ def iter_frontend(state, instance_id: str, session_id: str,
             for payload in frame_to_frontend(ev):
                 if payload["type"] == EV_THINKING:
                     thinking_parts.append(payload["delta"])
+                    yield encode_sse(payload, seq=seq)
                 elif payload["type"] == EV_CONTENT:
-                    content_parts.append(payload["delta"])
-                yield encode_sse(payload, seq=seq)
+                    step = payload.get("step")
+                    if last_text_step is None or step == last_text_step:
+                        text_by_step[step] = text_by_step.get(step, "") + payload["delta"]
+                        last_text_step = step
+                    else:
+                        # 更靠后的 step 也开始写正文 → 之前那段是过程话，整段丢掉。
+                        text_by_step = {step: payload["delta"]}
+                        last_text_step = step
+                    # 刻意**不在这里 yield**：正文一律留到回合末尾一次发（见文档字符串）。
 
             if is_turn_finished(ev, session_id):
+                final_content = take_final_content()
+                if final_content:
+                    # 末尾把正文作为一条 delta 发出去：前端按 delta 累计（`segmented`），
+                    # 也会正常渲染 markdown。
+                    yield encode_sse(
+                        {"type": EV_CONTENT, "delta": final_content, "step": last_text_step},
+                        seq=seq,
+                    )
                 done = {
                     "type": EV_DONE,
-                    "content": "".join(content_parts),
+                    "content": final_content,
                     "thinking": "".join(thinking_parts),
                     "segmented": True,
                 }
@@ -162,9 +201,15 @@ def iter_frontend(state, instance_id: str, session_id: str,
 
     if not settled:
         # 未能观察到 idle：仍然把已累积的内容交付，避免前端空等。
+        final_content = take_final_content()
+        if final_content:
+            yield encode_sse(
+                {"type": EV_CONTENT, "delta": final_content, "step": last_text_step},
+                seq=seq,
+            )
         done = {
             "type": EV_DONE,
-            "content": "".join(content_parts),
+            "content": final_content,
             "thinking": "".join(thinking_parts),
             "segmented": True,
         }

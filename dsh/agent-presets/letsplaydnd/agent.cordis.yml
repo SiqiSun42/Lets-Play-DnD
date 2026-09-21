@@ -22,6 +22,7 @@
   config:
     prefix: >-
       You are a Dungeon Master assistant for a D&D 5e play-by-chat game.
+      Reply with the player-facing result only; keep planning and tool work in your reasoning.
     suffix: Your working directory is {{cwd}}.
 
 # ── 文件 ──────────────────────────────────────────────────────────
