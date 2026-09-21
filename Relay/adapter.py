@@ -42,6 +42,7 @@ class DshSessionMap:
           session_id TEXT NOT NULL,
           created_at TEXT NOT NULL,
           cwd        TEXT,
+          model_key  TEXT,
           PRIMARY KEY (username, save_id)
         )
     """
@@ -59,15 +60,22 @@ class DshSessionMap:
 
     @staticmethod
     def _migrate(conn) -> None:
-        """给早于 ``cwd`` 列的库补上那一列。
+        """给早于 ``cwd`` / ``model_key`` 列的库补上那两列。
 
-        为什么要记 cwd：**会话的 cwd 是创建事实，建完改不了**，而工作区路径会变
+        为什么记 cwd：**会话的 cwd 是创建事实，建完改不了**，而工作区路径会变
         （例如把咨询的 cwd 从账号目录收紧到 ``Saves/consult/data``）。不记的话旧会话
         会被一直复用，P5-1 的读白名单就还圈在旧根上。
+
+        为什么记 model_key：**会话在创建时就把模型选择记进自己的 header**，改完 provider
+        路线或思考档位之后，旧会话仍会去要一个已经不存在的 provider——实测报
+        ``session/model-unavailable: no adapter serves provider "…"``，而且会话存在用户的
+        DSH_HOME 里、跨实例重启都还能恢复，杀实例救不了。所以配置一变就重建会话。
         """
         columns = {row[1] for row in conn.execute("PRAGMA table_info(dsh_sessions)")}
         if "cwd" not in columns:
             conn.execute("ALTER TABLE dsh_sessions ADD COLUMN cwd TEXT")
+        if "model_key" not in columns:
+            conn.execute("ALTER TABLE dsh_sessions ADD COLUMN model_key TEXT")
 
     def _connect(self):
         return sqlite3.connect(self.db_path, timeout=10)
@@ -86,39 +94,45 @@ class DshSessionMap:
         return row[0] if row else None
 
     def set(self, username: str, save_id: str, session_id: str,
-            cwd: str | None = None) -> None:
+            cwd: str | None = None, model_key: str | None = None) -> None:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         with self._lock:
             conn = self._connect()
             try:
                 conn.execute(
-                    "INSERT INTO dsh_sessions (username, save_id, session_id, created_at, cwd)"
-                    " VALUES (?, ?, ?, ?, ?)"
+                    "INSERT INTO dsh_sessions"
+                    " (username, save_id, session_id, created_at, cwd, model_key)"
+                    " VALUES (?, ?, ?, ?, ?, ?)"
                     " ON CONFLICT(username, save_id)"
-                    " DO UPDATE SET session_id = excluded.session_id, cwd = excluded.cwd",
-                    (username, save_id, session_id, now, cwd),
+                    " DO UPDATE SET session_id = excluded.session_id,"
+                    " cwd = excluded.cwd, model_key = excluded.model_key",
+                    (username, save_id, session_id, now, cwd, model_key),
                 )
                 conn.commit()
             finally:
                 conn.close()
 
-    def needs_rebuild(self, username: str, save_id: str, cwd: str) -> bool:
-        """这条映射记下的工作区是否与现在要求的不一致。
+    def needs_rebuild(self, username: str, save_id: str, cwd: str,
+                      model_key: str | None = None) -> bool:
+        """这条映射记下的工作区与模型配置是否与现在要求的不一致。
 
-        不一致就得**重建会话**——会话的 cwd 建完不能改，而读白名单的根就是会话 cwd。
-        没有记录、或迁移前留下的 NULL，都算不一致：重建无害，复用错工作区有害。
+        不一致就得**重建会话**：会话的 cwd 与模型选择都是**创建事实**，建完改不了
+        （cwd 还是读白名单的根）。没有记录、或迁移前留下的 NULL，都算不一致：
+        重建无害，复用错工作区/错模型有害。
         """
         with self._lock:
             conn = self._connect()
             try:
                 row = conn.execute(
-                    "SELECT cwd FROM dsh_sessions"
+                    "SELECT cwd, model_key FROM dsh_sessions"
                     " WHERE username = ? AND save_id = ?",
                     (username, save_id),
                 ).fetchone()
             finally:
                 conn.close()
-        return row is None or row[0] != cwd
+        if row is None or row[0] != cwd:
+            return True
+        return model_key is not None and row[1] != model_key
 
     def clear(self, username: str, save_id: str) -> None:
         with self._lock:
@@ -143,15 +157,16 @@ def _session_alive(state, instance_id: str, session_id: str) -> bool:
 
 
 def _ensure_session(state, session_map: DshSessionMap, username: str,
-                    save_id: str, instance_id: str, cwd: str, preset: str) -> str:
+                    save_id: str, instance_id: str, cwd: str, preset: str,
+                    model_key: str | None = None) -> str:
     """取回或新建该存档对应的 DSH 会话，并在新建时选择 preset。
 
-    复用前要满足两条：工作区没变（``needs_rebuild``）、旧会话还活着。
-    工作区变了就重建——会话的 cwd 建完改不了，而它同时是读写围栏的根。
+    复用前要满足三条：工作区没变、**模型配置没变**（``needs_rebuild``）、旧会话还活着。
+    任一条不满足就重建——会话的 cwd 与模型选择都是创建事实，建完改不了。
     """
     session_id = session_map.get(username, save_id)
     if (session_id
-            and not session_map.needs_rebuild(username, save_id, cwd)
+            and not session_map.needs_rebuild(username, save_id, cwd, model_key)
             and _session_alive(state, instance_id, session_id)):
         return session_id
 
@@ -192,6 +207,7 @@ def stream_dsh_turn(state, session_map: DshSessionMap, *,
                     skill: str | None = None,
                     preset: str = DEFAULT_PRESET, persist=None,
                     on_turn_end=None,
+                    model_key: str | None = None,
                     instance_wait_s: float = 45.0):
     """产出可直接写进 SSE 响应体的字符串。
 
@@ -216,7 +232,7 @@ def stream_dsh_turn(state, session_map: DshSessionMap, *,
 
     try:
         session_id = _ensure_session(state, session_map, username, save_id,
-                                     instance_id, cwd, preset)
+                                     instance_id, cwd, preset, model_key)
     except Exception as exc:  # noqa: BLE001 — 对前端只暴露为一条 error 事件
         yield encode_sse({"type": EV_ERROR, "error": f"session setup failed: {exc}"})
         return

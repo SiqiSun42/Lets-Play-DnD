@@ -20,7 +20,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from Relay import RelayState, SqliteKeyStore
 from Relay.adapter import DshSessionMap, stream_dsh_turn
 from Relay.blueprint import create_blueprint as create_relay_blueprint
-from Relay.instances import InstanceConfig, UserInstances
+from Relay.instances import InstanceConfig, UserInstances, provider_route
 from Relay.snapshot import SaveSnapshots
 from Relay.sse import iter_frontend as relay_iter_frontend
 
@@ -147,6 +147,25 @@ def ensure_user_instance(username: str) -> str | None:
     except Exception as exc:  # noqa: BLE001 — 起实例失败不该盖掉原来的错误路径
         print(f"[instances] 为用户 {username} 起实例失败：{exc}", flush=True)
         return None
+
+
+def session_model_key(username: str) -> str:
+    """该用户当前"模型选择"的指纹：provider + 模型 + 思考档位。
+
+    会话在创建时把模型选择**记进自己的 header**，之后改 provider 路线或档位都不会
+    影响它——旧会话会继续要一个可能已经不存在的 provider，实测报
+    ``session/model-unavailable: no adapter serves provider "…"``。
+    把指纹交给 `DshSessionMap.needs_rebuild()`，配置一变就重建会话。
+
+    传入 DSH 的模型名是 `provider_route()` 解析出来的那个（与 patch 里写的同一个），
+    保证指纹与实际组合一致。
+    """
+    provider = _user_provider(username)
+    route = provider_route(provider) or {}
+    effort = user_instances.config.reasoning_effort if provider == "deepseek" else ""
+    return f"{provider}:{route.get('model', '?')}@{effort}"
+
+
 # (用户名, 存档) → DSH 会话 id 的持久映射，与 relay 同库。
 dsh_session_map = DshSessionMap(DB_PATH)
 
@@ -958,7 +977,7 @@ def _dsh_consult_stream(username: str, text: str):
             yield from stream_dsh_turn(
                 relay_state, dsh_session_map,
                 username=username, save_id="consult", text=text,
-                cwd=str(cwd),
+                cwd=str(cwd), model_key=session_model_key(username),
                 persist=lambda role, content, reasoning: consult_append_message(
                     username, role, content, reasoning),
             )
@@ -1047,7 +1066,7 @@ def _dsh_game_stream(username: str, save_id: str, text: str, skill: str):
             yield from stream_dsh_turn(
                 relay_state, dsh_session_map,
                 username=username, save_id=save_id, text=text,
-                cwd=str(cwd), skill=skill,
+                cwd=str(cwd), skill=skill, model_key=session_model_key(username),
                 persist=lambda role, content, reasoning: game_append_message(
                     username, save_id, role, content, reasoning),
                 # 快照在**出稿之后**提交（on_turn_end 里已经吞掉异常，失败不影响这一轮）。
