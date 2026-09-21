@@ -66,7 +66,7 @@ DSH 实例（每用户一个，web-capable profile）
 ```
 /opt/letsplaydnd/
   server.py
-  System/
+  Store/                    # 数据层：存档 meta + 两个 chat.db 的读写（从 System/ 逐字抽离）
   UI/
   RAG/
   Dice/
@@ -75,6 +75,8 @@ DSH 实例（每用户一个，web-capable profile）
       SKILL.md
       references/
     consult-en/             # 结构与 consult-zh 逐节对应
+    game-zh/                # 游戏流程（四步 + references/）
+    game-en/                # 占位，英文流程未编写
   MCP/
     mcp_server.py
   Relay/                    # dsh2server 协议的服务端实现
@@ -85,6 +87,10 @@ DSH 实例（每用户一个，web-capable profile）
 /var/lib/letsplaydnd/history/         # 存档快照裸库（工作区之外）
 /var/lib/letsplaydnd/users/<name>/    # 每用户 DSH_HOME（0700）
 ```
+
+**不在服务器上**（本地保留便于回看，`.gitignore` 已忽略）：`System/`（旧流程编排）、
+`Prompts/`（旧提示词）、`Tools/`（旧工具实现）。服务器侧的开关已默认打开，旧流程分支不会执行；
+`server.py` 需要的数据层函数已抽到 `Store/`，与 `System/` 无 import 依赖（实测把三者全挪走仍可运行）。
 
 ### 4.2 组件职责
 
@@ -909,8 +915,11 @@ DSH `dsh-fs-sandbox` README 的原话：围栏是策略而非内核边界，**�
 > **详细设计见 `game-flow-design.md`**（独立文档）。本节只留摘要，避免两处描述漂移。
 >
 > 设计主体已定：**§9 全部裁决完毕，无待确认项**。**端到端联调已通过**（`game-flow-design.md` §10 有逐项结果），
-> 剩两个验收项（对账、半成品叙述压力测试）与提示词精修。适配层已落地的开关：`DSH_CONSULT_ENABLED` / `DSH_GAME_ENABLED`（默认关）、
-> `DSH_INSTANCE_AUTOSTART`（默认开）。
+> 剩两个验收项（对账、半成品叙述压力测试）与提示词精修。
+>
+> **收尾已完成**：数据层从 `System/` 逐字抽到 `Store/`（`server.py` 不再依赖 `System/`），
+> 开关 `DSH_CONSULT_ENABLED` / `DSH_GAME_ENABLED` **默认打开**（`=0` 可本机回退），
+> `System/`、`Prompts/`、`Tools/` 已不再推送（`.gitignore`），每用户实例自启 `DSH_INSTANCE_AUTOSTART` 默认开。
 >
 > **语言路由（已实现）**：`server.game_skill_for(save_meta["in_game_language"])` → `game-zh` / `game-en`，
 > 适配层把 `/<skill>` 注入当轮提示词（`Relay/adapter.py` 的 `skill` 参数）。

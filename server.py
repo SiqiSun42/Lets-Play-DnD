@@ -45,15 +45,18 @@ app.register_blueprint(create_relay_blueprint(relay_state, base_path=RELAY_BASE_
 app.extensions["dsh_relay_state"] = relay_state
 
 # ── consult 适配层（spec.md §6 P3.5）──────────────────────────────
-# 打开后 /api/consult/message/stream 内部改走 DSH，**前端零改动**。
-# 新旧路径并存：不设这个开关就完全走 System/consult 的原有流程。
-DSH_CONSULT_ENABLED = os.environ.get("DSH_CONSULT_ENABLED", "").strip().lower() in (
+# 走 DSH，**前端零改动**。
+#
+# **默认开**：迁移已端到端联调通过，DSH 是主路径；旧流程（`System/consult`）只留着回看，
+# 且它的依赖（`Prompts/`、`Tools/`）不再推送到服务器。要临时回退就设 `=0`——
+# 但服务器上没有那两个目录，回退只在本机有效。
+DSH_CONSULT_ENABLED = os.environ.get("DSH_CONSULT_ENABLED", "1").strip().lower() in (
     "1", "true", "yes", "on")
 
 # ── game 适配层（spec.md §6 P6）───────────────────────────────────
-# 同上：打开后 /api/game/message/stream 改走 DSH，前端零改动。
+# 同上：走 DSH，前端零改动。默认开，`=0` 回退。
 # 与 consult 的**唯一结构差别**：game 要按存档的语言注入不同的 skill（consult 由模型自己选）。
-DSH_GAME_ENABLED = os.environ.get("DSH_GAME_ENABLED", "").strip().lower() in (
+DSH_GAME_ENABLED = os.environ.get("DSH_GAME_ENABLED", "1").strip().lower() in (
     "1", "true", "yes", "on")
 
 # ── 存档快照（spec.md §6 P5-2，P6 接线）───────────────────────────
@@ -938,7 +941,7 @@ def _dsh_consult_stream(username: str, text: str):
 
     DSH 侧不需要 Flask 这边的用户 API Key——每个 DSH 实例用自己的凭据。
     """
-    from System.consult.consult import append_message
+    from Store.consult import append_message as consult_append_message
 
     # 咨询只查规则、不碰存档文件。工作区收紧到自己的 `data/`——与 game 同构
     # （模型 cwd = `<存档根>/data`，`chat.db` 在存档根、模型看不到）。
@@ -956,7 +959,7 @@ def _dsh_consult_stream(username: str, text: str):
                 relay_state, dsh_session_map,
                 username=username, save_id="consult", text=text,
                 cwd=str(cwd),
-                persist=lambda role, content, reasoning: append_message(
+                persist=lambda role, content, reasoning: consult_append_message(
                     username, role, content, reasoning),
             )
         except Exception as exc:  # noqa: BLE001 — 对前端只暴露为一条 error 事件
@@ -993,7 +996,8 @@ def consult_message_stream():
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     provider = settings.get("model") or "deepseek"
 
-    from System import configure_client, find_save_meta, run_stream
+    from Store.meta import find_save_meta
+    from System import configure_client, run_stream
 
     try:
         item = find_save_meta(username, "consult")
@@ -1026,7 +1030,7 @@ def _dsh_game_stream(username: str, save_id: str, text: str, skill: str):
 
     DSH 侧不需要 Flask 这边的用户 API Key——每个 DSH 实例用自己的凭据。
     """
-    from System.game import append_message
+    from Store.game import append_message as game_append_message
 
     cwd = _save_data_dir(username, save_id)
     # save_id 已经过 find_save_meta 校验（必须存在于 meta.json），所以这里不用再防穿越。
@@ -1044,7 +1048,7 @@ def _dsh_game_stream(username: str, save_id: str, text: str, skill: str):
                 relay_state, dsh_session_map,
                 username=username, save_id=save_id, text=text,
                 cwd=str(cwd), skill=skill,
-                persist=lambda role, content, reasoning: append_message(
+                persist=lambda role, content, reasoning: game_append_message(
                     username, save_id, role, content, reasoning),
                 # 快照在**出稿之后**提交（on_turn_end 里已经吞掉异常，失败不影响这一轮）。
                 on_turn_end=lambda _done: commit_save_snapshot(username, save_id, text),
@@ -1074,11 +1078,8 @@ def game_message_stream():
     if not save_id or save_id == "consult":
         return jsonify({"error": "invalid id"}), 400
 
-    from System.battle import is_save_soft_locked
-    if is_save_soft_locked(username, save_id):
-        return jsonify({"error": "soft_locked"}), 403
-
-    from System import find_save_meta
+    # 软锁（团灭）随战斗一起移除（spec P6 第 9 条），这里不再有 403 前置。
+    from Store.meta import find_save_meta
 
     try:
         item = find_save_meta(username, save_id)
@@ -1129,7 +1130,7 @@ def game_snapshots():
         return jsonify({"error": "not logged in"}), 401
 
     save_id = (request.args.get("id") or "").strip()
-    from System import find_save_meta
+    from Store.meta import find_save_meta
     try:
         find_save_meta(username, save_id)
     except KeyError:
@@ -1159,7 +1160,7 @@ def game_rollback():
     save_id = (body.get("id") or "").strip()
     rev = (body.get("rev") or "HEAD").strip()
 
-    from System import find_save_meta
+    from Store.meta import find_save_meta
     try:
         find_save_meta(username, save_id)
     except KeyError:
@@ -1186,7 +1187,8 @@ def consult_messages():
     if not username:
         return jsonify({"error": "not logged in"}), 401
 
-    from System import find_save_meta, load_for_ui
+    from Store.meta import find_save_meta
+    from Store.consult import load_for_ui
 
     try:
         item = find_save_meta(username, "consult")
@@ -1241,7 +1243,7 @@ def consult_history():
 
     query = (request.args.get("q") or "").strip() or None
 
-    from System import load_history_for_ui
+    from Store.consult import load_history_for_ui
 
     data = load_history_for_ui(username, before_id=before_id, limit=limit, query=query)
     return jsonify({
@@ -1255,7 +1257,7 @@ def consult_clear():
     if not username:
         return jsonify({"error": "not logged in"}), 401
 
-    from System import clear_chat
+    from Store.consult import clear_chat
 
     clear_chat(username)
     return jsonify({"ok": True})
@@ -1310,13 +1312,13 @@ def game_messages():
     if not save_id or save_id == "consult":
         return jsonify({"error": "invalid id"}), 400
 
-    from System import load_game_for_ui
-    from System.battle import is_save_soft_locked
+    from Store.game import load_for_ui as load_game_for_ui
 
     messages = load_game_for_ui(username, save_id)
     return jsonify({
         "messages": messages,
-        "soft_locked": is_save_soft_locked(username, save_id),
+        # 软锁随战斗移除（spec P6 第 9 条）。字段留给前端，恒为 False。
+        "soft_locked": False,
     })
 
 @app.get("/api/game/history")
@@ -1347,7 +1349,7 @@ def game_history():
 
     query = (request.args.get("q") or "").strip() or None
 
-    from System import load_game_history_for_ui
+    from Store.game import load_history_for_ui as load_game_history_for_ui
 
     data = load_game_history_for_ui(
         username, save_id, before_id=before_id, limit=limit, query=query

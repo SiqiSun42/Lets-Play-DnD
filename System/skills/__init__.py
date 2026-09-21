@@ -1,1 +1,0 @@
-from .skills import load_skills_meta, load_skill

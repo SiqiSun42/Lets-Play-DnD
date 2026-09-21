@@ -22,4 +22,24 @@ poc/
 # 存档快照的裸 git 库（spec P5-2）。刻意放在工作区之外——模型对工作区有写权限，
 # `.git` 若在存档内就可能被改写，快照失去意义。生产走
 # DSH_SNAPSHOT_DIR=/var/lib/letsplaydnd/history，本地默认落在仓库根这里。
-.snapshots/.dsh-users/
+.snapshots/
+
+# 每用户 DSH 实例的家目录（spec §10.5）。**里面有各用户的模型 API Key**，
+# 绝不能提交。生产走 DSH_USERS_DIR=/var/lib/letsplaydnd/users。
+.dsh-users/
+
+# 旧流程的提示词、工具实现与编排（`System/`）。迁移后**服务器上不需要**它们：
+# 服务器只跑 DSH 路径，而开关**已默认打开**（`server.py` 里 DSH_CONSULT_ENABLED /
+# DSH_GAME_ENABLED 的默认值），所以旧流程分支根本不会执行。
+#
+# 服务器需要的那部分已经从 `System/` **逐字抄进 `Store/`**（见 `Store/__init__.py`）：
+# 存档 meta 读取、两个 chat.db 的读写。`server.py` 只认 `Store/`。
+# 本地保留便于回看（真要删是以后的事），只是不推送。
+#
+# ⚠️ 取消跟踪靠的是 `git rm -r --cached Prompts Tools System`——**光加 ignore 对已跟踪文件无效**。
+# ⚠️ 所以下次服务器 `git pull` 会把这几个目录从工作区删掉。若要在服务器上临时回退旧流程，
+#    得先把它们从 git 里恢复（`git checkout <旧提交> -- System Prompts Tools`）。
+#    开关关掉但文件不在，是 import 失败（吵闹失败），不会静默出错。
+Prompts/
+Tools/
+System/
