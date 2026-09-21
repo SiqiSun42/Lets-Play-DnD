@@ -218,6 +218,29 @@ class SqliteKeyStore:
             finally:
                 conn.close()
 
+    def remove_user(self, username: str, label_prefix: str | None = None) -> int:
+        """撤销某个用户名下的 key，返回删掉几条。
+
+        每用户实例重新拉起时先调它：一个用户只该有一个实例，旧 key 留着
+        只会让"哪个实例算这个用户的"变得含糊。
+
+        ``label_prefix`` 非空时**只删** label 以它开头的行——管理端手工登记的 key
+        不该被自动流程悄悄撤掉（踩过：自动流程把手工登记的 local-dev 一起删了）。
+        """
+        sql = "DELETE FROM dsh_instances WHERE username = ?"
+        args: list = [username]
+        if label_prefix:
+            sql += " AND label LIKE ?"
+            args.append(label_prefix + "%")
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(sql, tuple(args))
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
     def list_public(self) -> list[dict]:
         with self._lock:
             conn = self._connect()

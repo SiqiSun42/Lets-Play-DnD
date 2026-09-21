@@ -27,8 +27,8 @@ DSH 与 Flask 之间的通道采用社区插件 `dsh2server`：DSH 实例**主�
 | 项 | 说明 |
 |---|---|
 | battle 流程 | 流程本身尚未完成，暂缓 |
-| 中英双语 | 暂缓；当前仅实现中文 |
-| DSH 插件**开发** | 不编写任何 DSH 插件；仅**安装并使用**第三方 `dsh2server` |
+| 中英双语 | **consult 已双语**（`consult-zh` / `consult-en`，见 §2.2「双语化」）；game 与 battle 仍仅中文 |
+| DSH 插件**开发** | ⚠️ **已偏离，见 P5-1 / P6**。原定"不编写任何 DSH 插件"，实际自研了两个：`dsh/plugins/fs-readguard`（读路径围栏——DSH 任何一层都不提供，沙箱只管写）与 `dsh/plugins/tool-list-dir`（目录列举工具——官方只给 `read`/`read_image`/`write`/`edit`，没有把"列目录"交给模型的工具）。除此之外仍只安装并使用第三方插件 |
 
 ---
 
@@ -71,9 +71,10 @@ DSH 实例（每用户一个，web-capable profile）
   RAG/
   Dice/
   Skills/
-    consult/
+    consult-zh/
       SKILL.md
       references/
+    consult-en/             # 结构与 consult-zh 逐节对应
   MCP/
     mcp_server.py
   Relay/                    # dsh2server 协议的服务端实现
@@ -147,18 +148,19 @@ patch 内容：`customSkillDirs`、工具 allowlist、MCP 服务地址、模型�
 
 ### 5.2 Skills
 
-**位置**：`Skills/<name>/`，与项目并列存放。当前为 `Skills/consult/`。
+**位置**：`Skills/<name>/`，与项目并列存放。当前为 `Skills/consult-zh/` 与 `Skills/consult-en/`。
 
 **结构**：
 
 ```
 Skills/
-  consult/
+  consult-zh/
     SKILL.md            流程总纲
     references/         各阶段指令，按需读取
       decision.md
       rag-query.md
       output.md
+  consult-en/           与 consult-zh 结构逐节对应，内容为英文
   game/                 与 consult 并列（P6）
     SKILL.md
     references/
@@ -169,7 +171,7 @@ Skills/
 - 目录式 bundle：被扫描的根下直接是 `<name>/SKILL.md`；**不支持嵌套** `**/SKILL.md`
 - frontmatter 必填 `name`（kebab-case，且与目录同名）与 `description`；可选 `whenToUse`、`disable-model-invocation`、`user-invocable`
 - **`references/` 下的文件不会自动进入上下文。** skill 工具返回 `<skill_resources>` 块，给出该 skill 的**绝对基目录**并要求按基目录解析相对路径；模型须自行用 `read` 读取。因此 SKILL.md 正文必须显式写明要读哪些文件
-- 语言隔离：中文与英文为独立目录，不在同一 `SKILL.md` 内做语言分支。当前仅有 `consult/`；引入英文时再定命名（见 §2.2 暂缓项）
+- 语言隔离：中文与英文为独立目录（`<name>-zh` / `<name>-en`），**不在同一 `SKILL.md` 内做语言分支**。已落地：`consult-zh` / `consult-en`，选择依据是用户当前输入的语言，见 §2.2「双语化」
 
 ### 5.3 DSH profile
 
@@ -247,8 +249,8 @@ dsh plugin --profile <name> add github:23J1633/dsh2server
 | P3 | DSH profile | P1、P2 | ✅ 已完成（§9 三条验证移交 P6） |
 | **P3.5** | **consult 适配层**（新增） |  P2、P3、P4 | ✅ 已完成 |
 | P4 | 中转服务器 | — | ✅ 已完成 |
-| P5 | 安全加固 | P3.5 | 进行中（key 白名单、存档快照、读白名单 已完成；剩回环租户隔离） |
-| P6 | game 流程迁移 | P5 | 待做 |
+| P5 | 安全加固 | P3.5 | 进行中（key 白名单、存档快照、读白名单、**每用户凭据隔离** 已完成；剩回环租户隔离等第二段，见 §10.5） |
+| P6 | game 流程迁移 | P5 | ✅ **端到端联调已通过**（六轮：五类 + 移动，真实链路，工具错误 0）；剩两个验收项待测（对账、半成品叙述压力测试）与提示词精修 |
 | P7 | battle | — | 暂缓 |
 
 ### P0 技术验证 —— 已完成
@@ -299,14 +301,15 @@ dsh plugin --profile <name> add github:23J1633/dsh2server
 
 ### P2 consult skills —— 已完成
 
-**内容**：编写 `Skills/consult/`，迁移 `Prompts/consult/` 内容至 `references/`。
+**内容**：编写 `Skills/consult/`（后拆为 `consult-zh/` + `consult-en/`），迁移 `Prompts/consult/` 内容至 `references/`。
 
 **依赖**：P1。
 
 **结果**：
 
 ```
-Skills/consult/
+Skills/consult-zh/        中文版（原 Skills/consult/，见下方「双语化」）
+Skills/consult-en/        英文版
   SKILL.md              流程总纲（原 agent 的编排）
   references/
     decision.md         判断是否需要检索
@@ -319,13 +322,89 @@ Skills/consult/
 | 项 | 结果 |
 |---|---|
 | 结构校验 | ✅ frontmatter 合法、`name` 为 kebab-case 且与目录同名、无嵌套 `SKILL.md` |
-| 可被发现 | ✅ `consult` 出现在会话的 skill 目录中 |
+| 可被发现 | ✅ `consult` 出现在会话的 skill 目录中；双语化后为 `consult-zh` / `consult-en` |
 | 热加载 | ✅ 修改 skill 无需重启 |
 | **references 可读** | ✅ skill 工具返回 `<skill_resources>` 块，给出**绝对基目录**并要求按基目录解析相对路径；实测可读 |
 
 **要点**：`references/` 下的文件**不会自动进入上下文**，SKILL.md 必须显式要求模型用 `read` 读取。此点已实测确认。
 
 **待补**：完整「判断 → 检索 → 输出」链路需 `search_rules` 工具可用，属 P3 验收。
+
+#### 双语化（consult-zh / consult-en）
+
+**语言选择规则**：**只看用户当前这一次输入的语言**，不做硬切割、不读存档设置。
+
+- `Skills/consult-zh/`：description 里写明"如果用户当前输入是中文，使用该 skill"
+- `Skills/consult-en/`：对应写 "If the user's current input is in English, use this skill"
+- 同一句话的两种语言交替出现时，以**最近一条用户输入**为准，不会中途硬切
+
+**为什么 consult 适合先做**：consult 不碰存档文件，切语言没有后果（没有"之前所有文本都是原语言"的问题）。game 流程不同——它有成篇的历史叙述，中途切换需要先暂停并询问用户是否要翻译既有内容（用户会在元对话里加这个指示）。这也是先完善 consult 机制的原因。
+
+**英文素材的来源与一处必须说明的差异**：
+
+| 英文 reference | 来源 |
+|---|---|
+| `decision.md` | `Prompts/consult/decision-en.md` 的 Judgement 部分 + 中文版对照补齐 |
+| `output.md` | `Prompts/consult/output-en.md` + 中文版对照补齐 |
+| `rag-query.md` | `Prompts/consult/decision-en.md` 的 Core Mechanism / Query Input / Multiple Queries 三节 + 中文版对照补齐 |
+| `SKILL.md` | 无英文来源（`Prompts/` 只有 `skills-zh.md`），按中文版对照重写 |
+
+⚠️ **`Prompts/consult/` 里没有 `rag-query-en.md`，也没有 `skills-en.md`**；而且英文的 `decision-en.md` **把 decision 与 rag-query 的内容混在一个文件里**（中文是拆开的）。因此英文 skill 是按**中文的三段结构**重新组织的，那三节从 `decision-en.md` 移到了 `rag-query.md`。两边结构逐节对应（decision 4 节 / rag-query 3 节 / output 3 节），已脚本校验。
+
+**语言库的选择（`search_rules` 的 `language` 参数）**
+
+RAG 有两套向量库与两套 embedding 模型：
+
+| `language` | collection | embedding | 空结果文案 |
+|---|---|---|---|
+| `"zh-CN"` | `dnd_rules_zh` | `BAAI/bge-small-zh-v1.5` | 未找到足够相关的规则。 |
+| `"en"` | `dnd_rules_en` | `BAAI/bge-small-en-v1.5` | No sufficiently relevant rules found. |
+
+原先 `MCP/mcp_server.py` 把语言**写死**为 `DEFAULT_LANGUAGE`，模型无法选择，英文 skill 只能查到中文库。现改为 `search_rules(query, context_label, language)`，`language` **必填、无默认值**：
+
+- 中文 skill 传 `language="zh-CN"`，英文 skill 传 `language="en"`
+- **不设默认值**：漏传会让工具调用直接报错，模型随即补上——刻意的吵闹失败
+- 若给默认值，漏传就会静默查到另一种语言，且失败**隐形**
+- **取值用 enum 钉死**：签名用 `Literal["zh-CN", "en"]`（`MCP/mcp_server.py` 的 `RuleLanguage`），
+  schema 生成 `enum`，模型在协议层只能从两个合法值里选
+- `Tools/consult/rag_tools_en.py` 是旧系统的人工实现（两套工具、语言焊在工具里），本次未采用，仅供对照
+
+**为什么必须用 enum，而不只是提示词约定**——`RAG._normalize_lang` 的容错方向很危险：
+
+```python
+lang = (language or "zh-CN").lower()
+if lang.startswith("en"): return "en"
+return "zh"          # 任何不以 en 开头的值，一律退回中文库
+```
+
+实测各种写法的落点：
+
+| 传入 | 实际库 | 备注 |
+|---|---|---|
+| `"zh-CN"` / `"中文"` / `"zh"` / `""` | zh | `"中文"` 是对的，但纯属碰巧 |
+| `"en"` / `"English"` / `"en-US"` / `"EN"` | en | `"English"` 也是碰巧（`startswith("en")`） |
+| **`"英文"`** | **zh** | ❌ **英文 skill 若填"英文"，会静默查到中文库** |
+
+也就是说错值**不一定报错**，还可能静默走错库——正是最难受的失败模式。
+改 enum 后实测：传 `"英文"` 被拒，返回
+`Input should be 'zh-CN' or 'en' [type=literal_error, input_value='英文']`，
+错误信息里带合法取值，模型可以据此自纠。
+
+**查错库的后果已经被 `output.md` 兜住**（这一条决定了上面那个参数该有多严）：
+
+`output.md` 把「没有返回文本」与「阅读后认为片段与用户需求**完全不匹配**」**合并为同一条规则**——
+都退到常识回答，且**必须向用户声明这不是规则书的直接引用、可能有误**。
+所以查错库不会导致"把错误规则当权威讲出来"，而是**可归位的降级**：用户拿到的是基于常识的回答 + 声明。
+剩下的灰区只有「完全不匹配」与「部分相关」之间——但查错库时返回的片段是**另一种语言**的、
+且**相似度分更低**（实测无意义查询 `[距离分数: 0.60]`，正常命中 0.70），两个信号都摆在模型面前。
+
+因此：**查询与库对应**是质量要求，不是正确性要求。这也是为什么 `language` 用必填（防漏传）
+而不是靠更复杂的机制去保证对应。
+
+> **改动生效范围**：MCP 工具的 schema 在**服务启动时**生成、并 DSH 实例在**启动时**拉取缓存。
+> 因此改 `MCP/mcp_server.py` 的工具签名后，必须**重启 MCP 服务**（:8790）**并重启 DSH 实例**，
+> 否则模型看到的仍是旧 schema。这点已在本次改动中实测：只重启 MCP 后，curl `tools/list`
+> 才看到新的 `required` 列表。
 
 ### P3 DSH profile
 
@@ -386,7 +465,7 @@ dsh/
 | preset 挂载（含压缩组） | ✅ 正常运行，无错误 |
 | MCP 工具 | ✅ 随 P3.5 consult 端到端实测通过：模型成功调用 `search_rules`（并据召回结果正确声明"非规则书引用"） |
 | 沙箱 `workspace-write` | ✅ 同上（模型写入存档成功，工作区外写入被拒） |
-| skill 目录 | ✅ 只出现预期 skill（`consult`） |
+| skill 目录 | ✅ 只出现预期 skill（`consult`；双语化后为 `consult-zh` / `consult-en`） |
 | **三段流程** | ✅ consult 端到端实测通过（判断 → 检索 → 输出），浏览器内验证：流式正文、思考过程、持久化、单气泡渲染均正常 |
 
 > 上表最后四行原先标为"待 `--patch` 重启后验证"，实际已由 P3.5 的 consult 端到端实测覆盖，故订正。
@@ -646,10 +725,27 @@ DSH 进程自身不受影响（仍能正常启动与运行）；存档可回滚�
 | 根 | 读 | 写 | 依据 |
 |---|---|---|---|
 | `ROOT/Account/<username>` | ✅ | ✅ | 就是当前的会话 cwd（`server.py:829`），**天然的用户级边界** |
-| `Skills/` | ✅ | ❌ | **必需，不能漏**：`Skills/consult/SKILL.md:9-10` 要求模型"用 read 工具读取对应文件"，不给它读 consult 直接跑不动 |
+| `Skills/` | ✅ | ❌ | **必需，不能漏**：`Skills/consult-zh/SKILL.md:9-10` 要求模型"用 read 工具读取对应文件"，不给它读 consult 直接跑不动 |
 | `Templates/` | ❌ | ❌ | **暂不列入**（未列入白名单即不可读）。模板是「开局」阶段由 Flask 侧复制成存档，模型没有读写必要。以后可能需要只读（例如游戏自建人物时参考格式），届时再加 |
 
 只有两个根。未列入的路径**默认不可读也不可写**——这正是白名单的意义，不需要为 `Templates/` 写任何"禁止"规则。
+
+> **⚠️ 根随流程不同**（P6 设计确定）：白名单的第一个根是**会话 cwd**，而两个流程的 cwd 不同。
+> 下表是**目标状态**：
+>
+> | 流程 | 会话 cwd（目标） | 实际可读写范围 |
+> |---|---|---|
+> | 规则咨询 | `Account/<用户名>/Saves/consult/data` | **只有咨询的 `data/`** |
+> | 游戏回合 | `Account/<用户名>/Saves/<存档>/data` | **只有该存档的 `data/`** |
+>
+> **⚠️ 咨询的 cwd 需要改**：现状是 `server.py:829` 传的是 `Account/<用户名>`，于是读白名单允许
+> **咨询读取该用户的全部存档**（`Account/<用户名>/Saves/**`）——而咨询一个存档文件都不需要读。
+> 改成 `Saves/consult/data` 之后，两个流程的 cwd 同构、边界一致。
+>
+> 另一个后果：模型读不到存档根的 `chat.db`。这是想要的——`chat.db` 由适配层写，不是模型的活。
+>
+> **`list_dir` 与这张表同圈**：它的上界也是会话 cwd（不是存档根），所以"能读的就能列"。
+> 见 P6 第 10 条与 `game-flow-design.md` §9.3.1。
 
 注意读写根**故意不同**：`Skills/` 必须可读但不可写，否则模型能改自己的指令。
 本项是在现有 `workspace-write`（只管写、根 = 会话 cwd）**之上补一条读规则**，不替换它。
@@ -662,8 +758,10 @@ DSH 进程自身不受影响（仍能正常启动与运行）；存档可回滚�
 理由：白名单是**可信代码中的策略**，只在"模型只能发工具调用、没有第二条通往文件系统的路"时完备。
 DSH `dsh-fs-sandbox` README 的原话：围栏是策略而非内核边界，**只有目标路径不可信**，
 因此「规范化后检查包含关系」就是该接口的完整答案；不可信代码的内核级隔离由 `ctx.shell` 负责。
-当前预设工具面 = `tool-fs`（`read`/`read_image`/`write`/`edit`）+ `skill-filesystem` + `tool-skill`，
+当前预设工具面 = `tool-fs`（`read`/`read_image`/`write`/`edit`）+ `tool-list-dir`（`list_dir`）
++ `skill-filesystem` + `tool-skill`，
 没有 bash、web、subagent、`tool-fs-search`；MCP 工具运行在我们的进程里，不是文件系统通道。**前提成立。**
+（`list_dir` 只列文件名、不读内容，且自己带同一套包含性检查，不削弱这条不变量。）
 
 **落地方式 —— 已实现**（`dsh/plugins/fs-readguard/`）
 
@@ -679,9 +777,10 @@ DSH `dsh-fs-sandbox` README 的原话：围栏是策略而非内核边界，**�
 |---|---|
 | 只拦 `read` / `read_image` | 写围栏已由 `sandbox-policy` 负责（可写根 = 会话 cwd）且带升权提示；再拦一次会让同一件事出现两套冲突报错 |
 | 根从 `agent.session.header.cwd` 取 | 与 `dsh-tool-fs` 取 cwd 的方式一致。**不能退回 `process.cwd()`**——那是 DSH 进程启动目录，不是会话工作区，会圈错地方 |
-| 零依赖，不 import 任何 `@deepseek-ai/*` | 插件装在 profile 的 `node_modules` 里，那里解析不到 dsh 安装目录下的包 |
+| 零依赖，不 import 任何 `@deepseek-ai/*` | **硬约束**：插件以 `link:` 装入 profile，真实路径仍在仓库里，Node 从**仓库**向上找 `node_modules`，走不到 `~/.dsh/profiles/node_modules`（那里才有指向 dsh 安装目录的符号链接）。实测 `ERR_MODULE_NOT_FOUND` |
 | 用 `realpath` 规范化目标（不存在的路径则解析最近的已存在祖先） | 穿透**已存在**的符号链接。模型自己造不出符号链接（无 shell，`write` 只写文本），但目录里本来就可能有一个 |
 | 拿不到会话 cwd 时**拒绝** | 失败关闭。放行是静默失败、拒绝是吵闹失败——安全控制该有后者 |
+| **不拦只读工作区目录的专用工具**（P6 新增） | 它的包含性检查**内建在实现里**（复用同一套 containment），范围是**构造**出来的，不需要经过拦截层。但 ⚠️ **若将来挂 `dsh-tool-fs-search`（`glob`/`grep`），必须同时把它加进本守卫的受管清单**——`glob` 返回路径、`grep` 返回匹配行，都是读通道，不拦就能扫整个文件系统 |
 
 **单元验收 —— 26 PASS / 0 FAIL**（`node dsh/plugins/fs-readguard/test.mjs`，不启动 DSH）
 
@@ -735,7 +834,7 @@ DSH `dsh-fs-sandbox` README 的原话：围栏是策略而非内核边界，**�
 
 - `read` / `read_image` 读 `.env`、`account.db`、`~/.dsh/.credentials.yaml`、`/proc/self/environ` 全部被拒
 - `read` 读 `Templates/` 下的文件被拒（未列入白名单的默认结果）
-- `read` 能读 `Skills/consult/references/*.md`（否则 consult 跑不动 —— 这条是防"白名单写太窄"）
+- `read` 能读 `Skills/consult-zh/references/*.md` 与 `Skills/consult-en/references/*.md`（否则 consult 跑不动 —— 这条是防"白名单写太窄"）
 - `write` 仍只能写 `Account/<user>/` 之下
 - 自动检查：扫 `agent.cordis.yml`，出现禁止工具即失败
 - DSH 进程自身不受限 → 启动与运行不受影响
@@ -783,7 +882,21 @@ DSH `dsh-fs-sandbox` README 的原话：围栏是策略而非内核边界，**�
 
 **验收结果**：22 PASS / 0 FAIL（含回滚、撤销回滚、重做、子目录、新增文件清除、空提交抑制、多存档隔离）。
 
-**遗留**：尚未接入回合流程（每回合提交、回滚入口属 P6）。
+**接进回合流程（P6，已实现）**：每回合**出稿之后**提交一次（`Relay/adapter.py` 的 `on_turn_end` 回调），
+根目录走 `DSH_SNAPSHOT_DIR`（生产 `/var/lib/letsplaydnd/history`，本地默认 `<仓库>/.snapshots`，已 gitignore）。
+回滚入口：`GET /api/game/snapshots`、`POST /api/game/rollback`。
+
+三条工程约定（都在接线时落地）：
+
+| 约定 | 原因 |
+|---|---|
+| 快照异常**只记日志，不影响这一轮** | 正文已经产出并落库，git 出问题不该让玩家看不到稿（实测：抛异常时 `done` 照常下发） |
+| 按存档串行（`_snapshot_lock`） | 前端已锁发送，但两个标签页仍可能同时进来，而 git 的 index 不是并发安全的 |
+| `rev` 只接受"像版本号"的字符串 | git 参数是列表、不经过 shell，但以 `-` 开头的 rev 会被当成 git 选项 |
+
+**实测开销**（真实存档 20 文件 / 11.6 KB）：首次提交 235 ms（含 `git init`）；
+**本回合无改动 71 ms 且不产生提交**；改 1 个文件 136 ms、仓库 +811 字节；
+再 20 个回合仓库 +15 KB（约 800 字节/回合）。相对一次 LLM 回合（秒级）可忽略。
 
 ### P6 game 流程迁移
 
@@ -792,6 +905,67 @@ DSH `dsh-fs-sandbox` README 的原话：围栏是策略而非内核边界，**�
 **验收**：常规回合端到端可玩；异常写入可回滚。
 
 **依赖**：P5。
+
+> **详细设计见 `game-flow-design.md`**（独立文档）。本节只留摘要，避免两处描述漂移。
+>
+> 设计主体已定：**§9 全部裁决完毕，无待确认项**。**端到端联调已通过**（`game-flow-design.md` §10 有逐项结果），
+> 剩两个验收项（对账、半成品叙述压力测试）与提示词精修。适配层已落地的开关：`DSH_CONSULT_ENABLED` / `DSH_GAME_ENABLED`（默认关）、
+> `DSH_INSTANCE_AUTOSTART`（默认开）。
+>
+> **语言路由（已实现）**：`server.game_skill_for(save_meta["in_game_language"])` → `game-zh` / `game-en`，
+> 适配层把 `/<skill>` 注入当轮提示词（`Relay/adapter.py` 的 `skill` 参数）。
+> 只有以 `en` 开头走英文，其余一律中文（与 `RAG._normalize_lang` 同约定）。
+> `Skills/game-en/` 目前是**占位**（正文写明尚未编写）；也没有 `en` 模板，所以现在还建不出英文存档。
+>
+> **已验收**（真实 headless 会话，非模拟）：`list_dir` 单测 15/15；真实会话里模型连续调用它 6 次
+> （`{"path":"."}`、`world`、`characters`、`plot`、`characters/allies`、`status`），
+> 输出均为相对路径 + 目录在前 + 点开头项不显示，且返回的路径直接被后续 `read` 用上；
+> 同一回合 `/game-zh` 注入成功（模型按 `read-panel.md` → `classify.md` → `exploration.md` 的顺序读）。
+> 验收脚手架与解会话日志的脚本见 `poc/dump-session.mjs`（`poc/` 已被 gitignore）。
+>
+> ⚠️ **E2E 的一个坑（已确认，避免重踩）**：**headless 组合不挂 agent preset**——
+> `agentPresets.mount()` 只在 `dsh-api-session-controller`（web-app 的行）里被调用。
+> 所以 `--profile headless` 下无论怎么配 roster，会话都不会用我们的 preset（会话头里 `agentPreset` 为空，
+> 模型看到的是 DSH 自带的编码助手工具面，`readRoots` 之类的预设配置也都不生效）。
+> 要在真实会话里验**预设本身**，必须走 web 实例（Flask → Relay → `agentPreset.select`），
+> 也就是 P6 接线后的路径；headless 只适合验**插件本体**（把预设的行直接 `insert` 进 patch）。
+> 其中最重要的三条已定的策略：
+> 1. **不注入上下文**——面板全部由 skill 约束模型自行读取（§4.2）。
+>    插件只用来补**工具**（`list_dir`）与**围栏**（`fs-readguard`），没有、也不会有注入上下文的插件
+> 2. **状态真源不是"存档为准"**，而是"本回合叙述改变了的以叙述为准，否则以本回合读到的存档为准，冲突时以叙述为准并补写存档"（§4.3 / §4.5）
+> 3. **变更清单**（`> 面包：3 → 2`）由模型在正文里产出，充当 update 的待办清单，替代被丢弃的 `plan_panel_update`（§4.4）
+>
+> **已裁决的十项**：
+> 1. **人称一律第二人称**（`interaction.md` 那句「全知第三人称」是错的，废弃）
+> 2. **battle 当做不存在**——不写交接、不做占位，本流程不涉及战斗
+> 3. **地点更新 reference 由 `4.2` + `4.3` 两稿合并新写**（不是二选一：它们是同一件事的两稿）
+> 4. **按流程隔离 skill 的方式：适配层注入，不靠两个 preset**（原"两个 preset + 机械检查"的方案已作废）。
+>    现状：**只有一个 preset** `letsplaydnd`；`Skills/` 平铺（`consult-zh` / `consult-en` / `game-zh` / `game-en`）。
+>    隔离靠**注入的 skill token**：game 由适配层按存档语言注入 `/game-zh` 或 `/game-en`（已实现），
+>    consult 不注入、由模型按用户输入语言在目录里自己选。
+>    所以不需要两份近 100 行的 YAML，也不需要那个"除 skill 根外完全相同"的机械检查。
+>    隔离的是**流程**（game 与 consult 挂不同 skill），**不是语言**：`consult-zh` 与 `consult-en` 都可见。
+>    详见 `game-flow-design.md` §8「语言路由」
+> 5. **`current_info.json` 由模型直接改写**（④ 阶段），可整体重写——旧系统由 Python 逐字段改，
+>    原因是当时**没有自审也没有回滚**（直接重写容易写出非法 JSON，例如加注释）。
+>    现在有快照回滚 + 覆盖前必须先读，所以不再需要那个限制
+> 6. **元对话不叠加 DM 注记**（保留旧行为）——其余四类是有效游戏动作，叙述里的「你」= 游戏角色；
+>    元对话是**暂停游戏、直接与玩家对话**，加 DM 扮演词会把玩家与角色混淆
+> 7. **语言**——`search_rules` 的 `language` 参数**保留且必填**；consult **维持按用户当前输入语言选变体**；
+>    game 的语言**开局确定且不可更改**（已有存档文件是原语言的，全翻译不可能）。本期不处理"语言切换"。
+>    **语言由「选哪个模板」决定**：模板清单 `Templates/game/meta.json` 的 `in_game_language` 在建存档时直接拷入存档 meta，
+>    玩家事后无法修改（UI 的语言开关只改**界面语言**与 `consult`，**不碰 `game_*`**）。
+>    因此加 `game-en` **零新增存储**；但**必须读存档的 `in_game_language`，不能读账号的 `settings.json.language`**（后者是界面语言）。
+>    此前"删掉 `in_game_language`"的计划**已撤销**。见 `game-flow-design.md` §9.2.3
+> 8. **主线 `plot/cur_main_plot.md` 本期不设计**——照搬现状（可读、不更新），先让整条流程跑起来
+> 9. **软锁（团灭）当做不存在**，删掉这个前置——团灭属于战斗，其他游戏逻辑不会死亡
+> 10. **加一个只读工作区目录的小工具**——极简模式的 `read` 只读文件、给目录报 `FS_NOT_REGULAR_FILE`，模型列不出目录；
+>     不挂 `dsh-tool-fs-search`（要额外挂**不受沙箱约束**的子进程后端去 spawn `rg`，且 `grep` 是内容通道），
+>     也**不引入代码执行/PTC**（官方明确其权限**等同 bash、可访问 Node API** → 等于拆除 P5-1 读白名单）。
+>     **已实现为进程内 DSH 插件 `dsh/plugins/tool-list-dir/`**：根固定为会话 cwd（模型只传相对路径），
+>     两道包含性检查（词法 + realpath），只列文件名不读内容。
+>     这一版**推翻了原先"MCP 工具"的决定**——MCP 拿不到会话上下文，只能让模型自己报 `base`，
+>     实测能拿别的存档当 base 列出其文件名。详见 `game-flow-design.md` §9.3.1
 
 ### P7 battle
 
@@ -893,32 +1067,60 @@ DSH `dsh-fs-sandbox` README 的原话：围栏是策略而非内核边界，**�
 > 本节记录的是**这次迁移自己引入的**行为变化，不属于 §10.3 的"旧系统问题"。
 > 排查依据是"设计意图 vs 当前代码实际行为"，不是猜测。
 
-#### 凭据未按用户隔离 —— **上线前必须解决**
+#### 凭据未按用户隔离 —— 第一段已完成，第二段待做
 
-| | 旧路径（非 DSH） | 现状（DSH 路径） |
-|---|---|---|
-| 取 key | `get_user_api_key(username)`（`server.py:867`） | **不取**：`server.py:863-865` 在取用户 key **之前**就分流到 DSH |
-| 实际使用 | 该用户自己的 key | DSH 实例自身的凭据 = `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`（**操作者的一把**） |
-| 未配 key 的用户 | 400 `api key unavailable` | **照常可玩，费用记在操作者头上** |
+| | 旧路径（非 DSH） | 之前（DSH 路径） | 现在（已实现） |
+|---|---|---|---|
+| 取 key | `get_user_api_key(username)` | **不取**：在读用户 key **之前**就分流到 DSH | 取，并写进**该用户自己的** DSH_HOME |
+| 实际使用 | 该用户自己的 key | DSH 实例自身的凭据 = `~/.dsh/.credentials.yaml`（**操作者的一把**） | 该用户自己的 key |
+| 未配 key 的用户 | 400 `api key unavailable` | **照常可玩，费用记在操作者头上** | 起不来实例，报"没有可用的模型 API Key" |
 
-证据链：`server.py:824` 注释（"DSH 侧不需要 Flask 这边的用户 API Key——每个 DSH 实例用自己的凭据"）、
-`server.py:863-865` 提前 `return`、`Relay/adapter.py:113` 的 `session.create` 只传 `cwd`、
-两个 profile patch（`dsh/profile.patch.yml`、`~/.dsh/profiles/letsplaydnd/cordis.patch.yml`）均未指定模型与 key。
+**成因（不变）**：DSH 的凭据存储是 **DSH_HOME 级**的，不是会话级。`ctx.credentials.resolve(ref)`
+只吃密钥名、**没有会话/用户维度**；`session.create` 能选 preset、能选 model，但**给不了 key**。
+所以"每用户一把 key"必然推导出**每用户一个 DSH_HOME**，与「每用户实例」是同一件事。
 
-**成因**：DSH 的凭据存储是 **DSH_HOME 级**，不是会话级。`session.create` 能选 preset、能选 model，
-但 key 来自进程的 credential store，**没有"本次会话用这把 key"的入参**。
+**第一段（已实现，`Relay/instances.py`）**：
 
-**因此"每用户一把 key"必然推导出每用户一个 DSH_HOME**（`update.md` §1.1 的 `dsh-<name>` 形态），
-它与「每用户实例自动创建 / 端口分配」是**同一件事**，必须合在一起做，不要拆成两步。
+1. 每用户一个 DSH_HOME（`DSH_USERS_DIR`，默认 `<仓库>/.dsh-users/<用户名>`，0700）
+2. 该用户的 key 写进它自己的 `<home>/.credentials.yaml`（0600，读-改-写，不覆盖 DSH 自己写的记录）
+3. 按该用户 `settings.json` 的 `model` 生成**每用户 patch**：一个 `dsh-llm-pi-ai` 路由
+   （`api: openai-completions` + `baseURL` 取自 `.env` 的 `<PREFIX>_URL`，密钥只写引用名
+   `apiKeyEnv: LPSD_USER_KEY`）+ `agent-default-model`
+4. 生成中转 key 并**按用户名登记**（`dsh_instances.username`），中转据此路由到人
+5. 按需拉起 `dsh --profile letsplaydnd --patch <每用户 patch> --host 127.0.0.1 --port 0 --no-open`，
+   等到上线；`DSH_INSTANCE_AUTOSTART=0` 可关
+6. 停止：`UserInstances.stop()`；进程跟踪写在 `<home>/instance.pid`，因此 **Flask 重启后仍收得掉**
+   （内存里的进程表会丢，这是实测踩到的）。认领 pid 前核对命令行里是否带着该用户的 home，
+   **认不出来就不杀**（失败关闭），避免 pid 复用后误杀
 
-**两条禁令**：
+**已实测**（伪造用户 + 一把**无效** key 跑通全程）：
+
+| 检查 | 结果 |
+|---|---|
+| 起实例 | 7.6 秒上线，`instance_for_user('e2euser')` = 它的 instance_id |
+| 用的是谁的 key | 请求上下文 `provider: letsplaydnd-user / model: qwen3.7-plus`，LLM 返回 **401 Incorrect API key** → 用的是**该用户的假 key**，不是操作者那把有效的 key |
+| 凭据文件 | 只有 `refs.LPSD_USER_KEY = <该用户的 key>`，没有操作者的任何东西 |
+| 停止 | 跨 Flask 重启仍能停掉进程，并撤销该用户名下的中转 key |
+| pid 复用安全性 | `foreign`（命令行不是我们的）→ 拒绝发信号并丢弃陈旧文件；`unverified`（认不出）→ 拒绝并保留文件；`dead` → 清理文件 |
+
+**第二段（上线前）**：
+
+| 项 | 说明 |
+|---|---|
+| 独立 OS 账号 | `update.md` §1.1 的方向：`dsh-<用户名>` + `0700` home + `0600` 凭据。现在每用户只是**目录**隔离，跑在同一个进程用户下 |
+| **回环租户隔离** | 所有实例都在 `127.0.0.1`，而 DSH 的特权接口按"Host 头是不是回环"放行。**当前可行的前提是本预设内没有可执行代码**（无 shell / web）——租户发起不了"伪造 Host 直连别人端口"这类攻击，与 P5-1 是同一条不变量。一旦引入任何代码执行工具，这条必须同时补上（`update.md` §1.3.1 的做法：iptables OUTPUT 按 `dsh-<name>` 限制） |
+| 安装树完整性 | 所有租户实例共享同一份 DSH 代码树，任何 group/other 可写点都是跨租户注入点 |
+| systemd 单元 | 目前由 Flask 拉起子进程。`update.md` §1.4 记了一条：systemd 命名空间只在由 systemd 拉起时生效 |
+| 空闲回收 | 现在实例起来就不主动停（只有 `stop()`）。要不要按空闲时间回收，看内存实测 |
+
+**两条禁令（不变）**：
 
 1. 不可只做"没 key 就拒绝开始游戏"的门禁。那只做了一半：强制用户配 key，实际仍用操作者的 key 跑，**比现状更误导**。
-2. **半成品不得部署。** 当前状态下，任何登录用户都能消耗操作者的额度。
+2. **半成品不得部署。** 第一段完成前，任何登录用户都能消耗操作者的额度。
 
-**与 P5-1 的关系**：补齐之后，每个实例的 key 就落在**它自己的 DSH_HOME** 内，
+**与 P5-1 的关系**：补齐之后，每个实例的 key 落在**它自己的 DSH_HOME** 内，
 而那是典型的"进程必须持有、模型因此也读得到"的一类文件——P5-1 读白名单是唯一挡得住它的东西。
-两者应一起上：只做隔离没有白名单，等于每个实例都能把自己的 key 念出来。
+两者一起上：只做隔离没有白名单，等于每个实例都能把自己的 key 念出来。
 
 **本地测试不受此限**：本机是同一操作者，共用一把 key 无影响。
 

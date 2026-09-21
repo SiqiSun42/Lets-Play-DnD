@@ -7,6 +7,7 @@ import os
 import base64
 import secrets
 import re
+import threading
 import resend
 from dotenv import load_dotenv
 # 用户自己的模型 API Key 之后还要调用供应商接口，使Fernet加密保存
@@ -17,8 +18,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 # DSH 中转服务器（dsh2server 协议 v1 的服务端实现）。见 spec.md §6 P4。
 from Relay import RelayState, SqliteKeyStore
-from Relay.adapter import DshSessionMap, stream_consult
+from Relay.adapter import DshSessionMap, stream_dsh_turn
 from Relay.blueprint import create_blueprint as create_relay_blueprint
+from Relay.instances import InstanceConfig, UserInstances
+from Relay.snapshot import SaveSnapshots
 from Relay.sse import iter_frontend as relay_iter_frontend
 
 ROOT = Path(__file__).resolve().parent
@@ -46,6 +49,101 @@ app.extensions["dsh_relay_state"] = relay_state
 # 新旧路径并存：不设这个开关就完全走 System/consult 的原有流程。
 DSH_CONSULT_ENABLED = os.environ.get("DSH_CONSULT_ENABLED", "").strip().lower() in (
     "1", "true", "yes", "on")
+
+# ── game 适配层（spec.md §6 P6）───────────────────────────────────
+# 同上：打开后 /api/game/message/stream 改走 DSH，前端零改动。
+# 与 consult 的**唯一结构差别**：game 要按存档的语言注入不同的 skill（consult 由模型自己选）。
+DSH_GAME_ENABLED = os.environ.get("DSH_GAME_ENABLED", "").strip().lower() in (
+    "1", "true", "yes", "on")
+
+# ── 存档快照（spec.md §6 P5-2，P6 接线）───────────────────────────
+# 每回合**出稿之后**把该存档的 `data/` 提交进一颗**工作区之外**的裸 git 库，
+# 于是模型把存档写坏了也能回滚。
+#
+# 库必须放在模型够不到的地方：模型 cwd = `<存档>/data`，而 P5-1 的读白名单只放行
+# cwd 与 `Skills/`，所以仓库放在仓库根下（生产用 `/var/lib/letsplaydnd/history/`，
+# 走 `DSH_SNAPSHOT_DIR`）它既读不到也写不到。
+SNAPSHOT_DIR = os.environ.get("DSH_SNAPSHOT_DIR", str(ROOT / ".snapshots"))
+save_snapshots = SaveSnapshots(SNAPSHOT_DIR)
+
+# 同一存档的快照操作串行化。前端已经把发送按钮锁到本轮结束，但两个标签页仍可能
+# 同时进来，而 git 的 index 不是并发安全的（会撞 index.lock）。
+_snapshot_locks: dict[tuple[str, str], threading.Lock] = {}
+_snapshot_locks_guard = threading.Lock()
+
+# 回滚的 rev 只接受"像版本号"的字符串：git 不经过 shell（参数是列表），
+# 但一个以 `-` 开头的 rev 会被当成 git 的选项，那就等于把命令行交给了调用方。
+_REV_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z_./~^-]*$")
+
+
+def _snapshot_lock(username: str, save_id: str) -> threading.Lock:
+    with _snapshot_locks_guard:
+        return _snapshot_locks.setdefault((username, save_id), threading.Lock())
+
+
+def _save_data_dir(username: str, save_id: str) -> Path:
+    """存档的模型工作区（快照的工作树）。"""
+    return ROOT / "Account" / username / "Saves" / save_id / "data"
+
+
+def commit_save_snapshot(username: str, save_id: str, text: str) -> str | None:
+    """把该存档的 ``data/`` 提交成一个快照；与上一回合无变化时返回 None。
+
+    提交信息带上玩家这一轮的输入，回滚时认得出是哪一回合。
+    """
+    data_dir = _save_data_dir(username, save_id)
+    if not data_dir.is_dir():
+        return None
+    message = f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} {text[:40]}"
+    with _snapshot_lock(username, save_id):
+        return save_snapshots.commit(data_dir, message)
+
+
+# ── 每用户 DSH 实例（spec.md §10.5）──────────────────────────────
+# 为什么必须每用户一个 DSH_HOME：DSH 的凭据存储是 DSH_HOME 级的，而
+# `session.create` 给不了 key。不这么做时所有实例共用操作者那一把 key，
+# 任何登录用户都能烧他的额度。详见 Relay/instances.py 的模块文档。
+DSH_INSTANCE_AUTOSTART = os.environ.get("DSH_INSTANCE_AUTOSTART", "1").strip().lower() in (
+    "1", "true", "yes", "on")
+
+# 实例回连中转的地址。实例是**向外**连的，所以这里必须是它够得着的地址
+# （生产上若中转不在本机，要显式给 DSH2SERVER_ENDPOINT）。
+_DSH_ENDPOINT = os.environ.get("DSH2SERVER_ENDPOINT") or (
+    f"http://127.0.0.1:{os.environ.get('FLASK_PORT', '5000')}{RELAY_BASE_PATH}")
+user_instances = UserInstances(
+    relay_state, relay_state.keys, InstanceConfig.from_env(endpoint=_DSH_ENDPOINT),
+    credentials_for=lambda username: {
+        "key": get_user_api_key(username),
+        "provider": _user_provider(username),
+    },
+)
+
+
+def _user_provider(username: str) -> str:
+    """用户在界面上选的模型供应商（`settings.json` 的 ``model``）。
+
+    缺文件或缺字段一律回落到 deepseek——与旧路径 `settings.get("model") or "deepseek"` 一致。
+    """
+    path = ROOT / "Account" / username / "settings.json"
+    try:
+        return (json.loads(path.read_text(encoding="utf-8")).get("model") or "deepseek")
+    except (OSError, ValueError):
+        return "deepseek"
+
+
+def ensure_user_instance(username: str) -> str | None:
+    """确保该用户有实例在线；失败**不抛**，只记日志。
+
+    返回 None 表示"没起成"——调用方继续走原来的 `wait_for_instance` 路径，
+    于是用户看到的还是那条"实例尚未连接"的提示，而不是这里的新错误。
+    """
+    if not DSH_INSTANCE_AUTOSTART:
+        return None
+    try:
+        return user_instances.ensure(username)
+    except Exception as exc:  # noqa: BLE001 — 起实例失败不该盖掉原来的错误路径
+        print(f"[instances] 为用户 {username} 起实例失败：{exc}", flush=True)
+        return None
 # (用户名, 存档) → DSH 会话 id 的持久映射，与 relay 同库。
 dsh_session_map = DshSessionMap(DB_PATH)
 
@@ -818,6 +916,23 @@ def delete_meta_save():
     )
     return jsonify({"ok": True, "data": new_data})
 
+def game_skill_for(language: str) -> str:
+    """存档的 ``in_game_language`` → 游戏流程 skill 名。
+
+    只有**以 en 开头**的值走英文，其余（含空、``zh-CN``、拼错的值）一律中文。
+    这与 ``RAG._normalize_lang`` 是同一套约定：宁可退回中文，也不让一个拼错的语言
+    字段把玩家丢进没有内容的英文流程。存档语言在建存档时由模板拷入，玩家改不了
+    （spec P6 第 7 条）。
+
+    Args:
+        language: 存档 meta 里的 ``in_game_language``。
+
+    Returns:
+        ``"game-en"`` 或 ``"game-zh"``。
+    """
+    return "game-en" if str(language or "").strip().lower().startswith("en") else "game-zh"
+
+
 def _dsh_consult_stream(username: str, text: str):
     """把 consult 一轮走 DSH，按前端既有事件格式产出 SSE（spec §6 P3.5）。
 
@@ -825,13 +940,19 @@ def _dsh_consult_stream(username: str, text: str):
     """
     from System.consult.consult import append_message
 
-    # consult 只查规则、不碰存档文件；工作区用用户自己的账号目录。
-    cwd = ROOT / "Account" / username
+    # 咨询只查规则、不碰存档文件。工作区收紧到自己的 `data/`——与 game 同构
+    # （模型 cwd = `<存档根>/data`，`chat.db` 在存档根、模型看不到）。
+    # 以前传的是 `Account/<用户名>`，那等于把该用户的**全部存档**放进了读白名单
+    # （P5-1 的根就是会话 cwd），而咨询一个存档文件都不需要读。
+    cwd = ROOT / "Account" / username / "Saves" / "consult" / "data"
     cwd.mkdir(parents=True, exist_ok=True)
 
     def generate():
         try:
-            yield from stream_consult(
+            # 该用户没有实例在线就按需起一个（用自己的 key）。起失败不抛，
+            # 继续走下面的等待，用户看到的仍是那条"实例尚未连接"。
+            ensure_user_instance(username)
+            yield from stream_dsh_turn(
                 relay_state, dsh_session_map,
                 username=username, save_id="consult", text=text,
                 cwd=str(cwd),
@@ -895,6 +1016,50 @@ def consult_message_stream():
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
+def _dsh_game_stream(username: str, save_id: str, text: str, skill: str):
+    """把 game 一轮走 DSH，按前端既有事件格式产出 SSE（spec §6 P6）。
+
+    ``skill`` 由 ``game_skill_for`` 按**存档语言**给出，名字是 ``game-zh`` / ``game-en``。
+
+    工作区 = 存档的 ``data/``：这既是模型的读写根（sandbox-policy 的可写根 = 会话 cwd），
+    也是 P5-1 读白名单的根。所以会话 cwd 必须在这里定死，模型自己看不到存档之外的东西。
+
+    DSH 侧不需要 Flask 这边的用户 API Key——每个 DSH 实例用自己的凭据。
+    """
+    from System.game import append_message
+
+    cwd = _save_data_dir(username, save_id)
+    # save_id 已经过 find_save_meta 校验（必须存在于 meta.json），所以这里不用再防穿越。
+
+    def generate():
+        if not cwd.is_dir():
+            yield ("data: " + json.dumps(
+                {"type": "error", "error": f"存档工作区不存在：{cwd.name}"},
+                ensure_ascii=False) + "\n\n")
+            return
+        try:
+            # 该用户没有实例在线就按需起一个（用自己的 key）。起失败不抛。
+            ensure_user_instance(username)
+            yield from stream_dsh_turn(
+                relay_state, dsh_session_map,
+                username=username, save_id=save_id, text=text,
+                cwd=str(cwd), skill=skill,
+                persist=lambda role, content, reasoning: append_message(
+                    username, save_id, role, content, reasoning),
+                # 快照在**出稿之后**提交（on_turn_end 里已经吞掉异常，失败不影响这一轮）。
+                on_turn_end=lambda _done: commit_save_snapshot(username, save_id, text),
+            )
+        except Exception as exc:  # noqa: BLE001 — 对前端只暴露为一条 error 事件
+            yield ("data: " + json.dumps(
+                {"type": "error", "error": str(exc)}, ensure_ascii=False) + "\n\n")
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/game/message/stream")
 def game_message_stream():
     username = session.get("username")
@@ -913,6 +1078,21 @@ def game_message_stream():
     if is_save_soft_locked(username, save_id):
         return jsonify({"error": "soft_locked"}), 403
 
+    from System import find_save_meta
+
+    try:
+        item = find_save_meta(username, save_id)
+    except KeyError:
+        return jsonify({"error": "save not found"}), 404
+
+    # 语言**只从存档读**，不从界面语言、也不从玩家输入的语言推断：
+    # 存档里已有的内容是什么语言，这一局就是什么语言（spec P6 第 7 条）。
+    language = item.get("in_game_language") or "zh-CN"
+
+    # DSH 路径：不查 Flask 侧的用户 API Key（每个 DSH 实例自带凭据）。
+    if DSH_GAME_ENABLED:
+        return _dsh_game_stream(username, save_id, text, game_skill_for(language))
+
     api_key = get_user_api_key(username)
     if not api_key:
         return jsonify({"error": "api key unavailable"}), 400
@@ -921,13 +1101,7 @@ def game_message_stream():
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     provider = settings.get("model") or "deepseek"
 
-    from System import configure_client, find_save_meta, run_game_zh
-
-    try:
-        item = find_save_meta(username, save_id)
-        language = item.get("in_game_language") or "zh-CN"
-    except KeyError:
-        return jsonify({"error": "save not found"}), 404
+    from System import configure_client, run_game_zh
 
     if not str(language).lower().startswith("zh"):
         return jsonify({"error": "english game flow not ready"}), 400
@@ -946,6 +1120,65 @@ def game_message_stream():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+@app.get("/api/game/snapshots")
+def game_snapshots():
+    """列出某存档的快照（新→旧），供"回滚到第几回合"用。"""
+    username = session.get("username")
+    if not username:
+        return jsonify({"error": "not logged in"}), 401
+
+    save_id = (request.args.get("id") or "").strip()
+    from System import find_save_meta
+    try:
+        find_save_meta(username, save_id)
+    except KeyError:
+        return jsonify({"error": "save not found"}), 404
+
+    data_dir = _save_data_dir(username, save_id)
+    if not data_dir.is_dir():
+        return jsonify({"ok": True, "data": []})
+
+    with _snapshot_lock(username, save_id):
+        history = save_snapshots.history(data_dir)
+    return jsonify({"ok": True, "data": history})
+
+
+@app.post("/api/game/rollback")
+def game_rollback():
+    """把存档回滚到某个快照。``rev`` 省略或给 ``HEAD`` 即回到最近一次提交。
+
+    回滚**不动历史**（`SaveSnapshots.rollback` 用 `read-tree --reset -u`，HEAD 不 detach），
+    所以滚过头还能再往前滚回来。
+    """
+    username = session.get("username")
+    if not username:
+        return jsonify({"error": "not logged in"}), 401
+
+    body = request.get_json() or {}
+    save_id = (body.get("id") or "").strip()
+    rev = (body.get("rev") or "HEAD").strip()
+
+    from System import find_save_meta
+    try:
+        find_save_meta(username, save_id)
+    except KeyError:
+        return jsonify({"error": "save not found"}), 404
+
+    if not _REV_RE.match(rev):
+        return jsonify({"error": "invalid rev"}), 400
+
+    data_dir = _save_data_dir(username, save_id)
+    if not data_dir.is_dir():
+        return jsonify({"error": "save workspace missing"}), 404
+
+    try:
+        with _snapshot_lock(username, save_id):
+            save_snapshots.rollback(data_dir, rev)
+    except Exception as exc:  # noqa: BLE001 — 回滚失败要把原因告诉调用方
+        return jsonify({"error": f"rollback failed: {exc}"}), 500
+    return jsonify({"ok": True, "data": {"id": save_id, "rev": rev}})
+
 
 @app.get("/api/consult/messages")
 def consult_messages():

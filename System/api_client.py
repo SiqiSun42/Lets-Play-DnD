@@ -20,6 +20,8 @@ def configure_client(*, api_key: str, provider: str):
     load_dotenv(root / ".env")
 
     # 根据provider类型映射到对应的环境变量前缀
+    # ⚠️ 同一张表在 Relay/instances.py 里也有一份（那边用它给每用户实例生成
+    # provider 路由）。加 provider 时两处一起改。
     env_prefix = {
         "deepseek": "DEEPSEEK",
         "qwen": "QWEN",

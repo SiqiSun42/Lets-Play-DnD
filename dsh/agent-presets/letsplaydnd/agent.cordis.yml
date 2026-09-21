@@ -5,7 +5,7 @@
 # 里写 `disabled: true` 是 no-op，真正决定工具面的是这份文件。
 #
 # 只给两类能力：
-#   1. 文件读写 —— tool-fs（read / write / edit）
+#   1. 文件读写 —— tool-fs（read / write / edit）+ list-dir（list_dir，列目录）
 #   2. 技能加载 —— skill-filesystem + tool-skill
 # 规则检索（search_rules）与骰子（roll_dice）由 host 平面的 MCP 行提供，
 # 注册进 host 的 tools 注册表，preset 不需要再挂。
@@ -31,6 +31,13 @@
 # 可写根 = 会话的 cwd = 存档目录。
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
+
+# 列目录。read 喂目录会报 FS_NOT_REGULAR_FILE，DSH 没有官方插件把"列目录"交给模型
+# （tool-fs-search 的 glob 也能列，但要额外挂一个不受沙箱约束的子进程后端去 spawn rg，
+# 而且 grep 是内容通道）。本插件只列文件名、不读内容，根固定为会话 cwd，
+# 模型只能传相对路径——与 fs-readguard 的读白名单同一个圈。见 dsh/plugins/tool-list-dir/README.md。
+- id: tool-list-dir
+  name: dsh-tool-list-dir
 
 # ── 技能 ──────────────────────────────────────────────────────────
 
@@ -67,7 +74,7 @@
     # 额外的读根。会话工作区（agent.session.header.cwd = Account/<用户名>）
     # 由插件自动放行，不写在这里——它由 Flask 按用户设定，写死会圈错地方。
     readRoots:
-      # 必需，不能漏：Skills/consult/SKILL.md 要求模型「用 read 工具读取对应文件」，
+      # 必需，不能漏：Skills/consult-zh（及 consult-en）/SKILL.md 要求模型「用 read 工具读取对应文件」，
       # 不给它读 consult 直接跑不动。用与上面 skill-filesystem 相同的回退表达式，
       # 避免两处各写一份而漂移。
       - !!js process.env.DSH_SKILLS_DIR ?? (process.cwd() + '/Skills')

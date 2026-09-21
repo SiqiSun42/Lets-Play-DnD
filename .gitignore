@@ -18,3 +18,8 @@ poc/
 
 # pnpm 在仓库根被调用时（`dsh plugin` 的 cwd 是仓库根）会留下的空 store 壳。
 .pnpm-store/
+
+# 存档快照的裸 git 库（spec P5-2）。刻意放在工作区之外——模型对工作区有写权限，
+# `.git` 若在存档内就可能被改写，快照失去意义。生产走
+# DSH_SNAPSHOT_DIR=/var/lib/letsplaydnd/history，本地默认落在仓库根这里。
+.snapshots/.dsh-users/

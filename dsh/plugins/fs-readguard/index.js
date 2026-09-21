@@ -34,11 +34,15 @@
  * 这个前提是硬性的：一旦引入 shell，本插件静默失效。
  * 依据见 spec.md P5-1「不变量」与 §8 约束 1。
  *
- * 为什么不 import 任何 @deepseek-ai/* 包
- * ------------------------------------
+ * 为什么零依赖（硬约束）
+ * --------------------
  *
- * 本插件被安装进 profile 的 node_modules（见 dsh/plugins/fs-readguard/README.md），
- * 那里解析不到 dsh 安装目录下的包。所以路径规范化用纯 node:fs 自己实现，零依赖。
+ * 本插件以 `link:` 装进 profile，**真实路径仍在仓库里**；Node 解析裸模块说明符时从真实路径
+ * 向上找 `node_modules`，也就是从仓库向上，永远走不到 `~/.dsh/profiles/node_modules`
+ * （那里才有指向 dsh 安装目录的符号链接）。所以 `@deepseek-ai/*` 一律 import 不到，
+ * 实测 `ERR_MODULE_NOT_FOUND`。路径规范化只能用纯 `node:fs` 自己写。
+ *
+ * 需要 `defineTool` 这类 dsh 包时，走 MCP 工具（Python 侧）或把插件发成正式包。
  */
 
 import { realpathSync } from 'node:fs';

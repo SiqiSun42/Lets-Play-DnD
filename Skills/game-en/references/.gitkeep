@@ -1,0 +1,2 @@
+English flow 的 references 还没写（见上一层的 SKILL.md）。
+这个文件只是让空目录能进 git；skill-filesystem 只读同层的 SKILL.md，会忽略它。

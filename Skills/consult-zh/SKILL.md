@@ -1,6 +1,6 @@
 ---
-name: consult
-description: 龙与地下城规则咨询。当用户询问 DnD 5e 规则，或想执行某个动作、需要判断是否符合规则时使用。
+name: consult-zh
+description: 龙与地下城规则咨询（中文）。当用户询问 DnD 5e 规则，或想执行某个动作、需要判断是否符合规则时使用。如果用户当前输入是中文，使用该 skill。
 whenToUse: 用户提出与龙与地下城规则相关的问题或行动意图时
 ---
 

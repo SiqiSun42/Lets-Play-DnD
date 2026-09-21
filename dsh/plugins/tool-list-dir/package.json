@@ -1,0 +1,12 @@
+{
+  "name": "dsh-tool-list-dir",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LetsPlayDnD 的目录列举工具 list_dir：根固定为会话工作目录，模型只能传相对路径（spec.md P6）",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "license": "MIT"
+}

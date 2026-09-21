@@ -113,10 +113,30 @@ node dsh/plugins/fs-readguard/test.mjs
 路径穿越、符号链接、前缀陷阱（`alice` 不能读 `alice-other`）这三类
 看着像在里面、实际在外面的写法。
 
-## 零依赖
+## 零依赖（硬约束，不是风格偏好）
 
-不 import 任何 `@deepseek-ai/*` 包：本插件装在 profile 的 `node_modules` 里，
-那里解析不到 dsh 安装目录下的包。路径规范化用纯 `node:fs` 实现。
+**本插件不能 import 任何 `@deepseek-ai/*` 包。**
+
+它是以 `link:` 装进 profile 的，**真实路径仍在仓库里**
+（`~/.dsh/profiles/<profile>/node_modules/dsh-fs-readguard` 是指向仓库的符号链接）。
+Node 解析裸模块说明符时**从真实路径向上找 `node_modules`**，也就是从仓库向上——
+永远走不到 `~/.dsh/profiles/node_modules`，而那里才是放着指向 dsh 安装目录符号链接的地方。实测：
+
+```
+❌ @deepseek-ai/dsh-tools → ERR_MODULE_NOT_FOUND
+```
+
+⚠️ **别测错基准目录**：用 `createRequire('<profile>/package.json')` 去解析是**能成功**的，
+但那不是插件自己 import 时的行为——这一点差点让我写下错误的结论。
+
+所以路径规范化用纯 `node:fs` 自己写。
+
+> 需要 `defineTool` 这类 dsh 包时，有三条路：走 **MCP 工具**（Python 侧，见 `MCP/mcp_server.py`）、
+> 把插件发布成正式包（落在 profile 的 `node_modules` 里就能正常解析），或者——
+> **不用 `defineTool`**：`ctx.tools.register()` 收的就是裸 `ToolDefinition`
+> （`{ name, description, parameters, output: {schema, render}, execute }`），
+> `defineTool` 只是"入参 spec → JSON Schema + 校验"的包装。
+> 实例见 `dsh/plugins/tool-list-dir/`，代价是入参校验要自己写。
 
 ## 已知边界
 
