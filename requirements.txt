@@ -9,3 +9,6 @@ pymupdf>=1.24.0
 torch>=2.2.0
 mcp>=1.0.0
 mcp>=2.1.1
+# Relay/instances.py 直接 import 它：读写每用户 DSH_HOME 的 `.credentials.yaml` 与每用户 patch。
+# 以前它只是别的包的传递依赖，我们不能靠运气。
+PyYAML>=6.0
