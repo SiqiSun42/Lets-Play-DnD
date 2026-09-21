@@ -699,6 +699,17 @@ async function sendChatMessage() {
             ? renderMarkdown(contentAcc)
             : contentAcc;
           scrollChatToBottomIfNeeded();
+        } else if (ev.type === 'content_reset') {
+          // 适配层判定"前面流出去的那段正文是过程话"（模型在过程与工具之间又写了一段），
+          // 让这里把气泡正文清空、从新那段接着流。思考不清空（它本来就是过程）。
+          contentAcc = '';
+          if (streamDm) {
+            streamDm.ensureStreamUi();
+            streamDm.contentEl.innerHTML = '';
+            streamDm.setContentVisible(false);
+            streamDm.setCopyText('');
+          }
+          scrollChatToBottomIfNeeded();
         } else if (ev.type === 'done') {
           if (!bubbleClosed) {
             const finalText = ev.segmented

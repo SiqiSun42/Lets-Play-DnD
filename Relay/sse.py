@@ -22,6 +22,8 @@ from typing import Iterator
 # 前端事件类型
 EV_THINKING = "thinking"
 EV_CONTENT = "content"
+# 正文重来：前面流出去的那段被判成"过程话"，前端把气泡正文清空，从新的一段接着流。
+EV_CONTENT_RESET = "content_reset"
 EV_NEW_BUBBLE = "new_bubble"
 EV_END_BUBBLE = "end_bubble"
 EV_DONE = "done"
@@ -110,43 +112,37 @@ def iter_frontend(state, instance_id: str, session_id: str,
 
     终止条件：收到该会话的 ``session/status = idle``、实例消失、或整体超时。
 
-    **正文只发一段，而且是"最后一个产生过正文的 step"那一段。**
+    **正文实时流式，但只以"最后一个产生过正文的 step"为准。**
 
-    为什么不能每来一段 text 就发一段：模型在多步自主流程里常会在**第一次工具调用前**
-    说一句"我先把参考文件读进来"——那是过程话，不该进正文；而前端会把整轮的 content
-    分片按顺序拼成**同一个气泡**，于是过程话就粘在正文最前面（实测症状：
-    正文第一句是一句英文计划）。所以这里按 step 缓冲正文，**一旦出现更靠后的 step
-    也产生正文，就把之前那段整个丢掉**。
+    模型在多步自主流程里常会在**第一次工具调用前**说一句"我先把参考文件读进来"——那是过程话，
+    不该进正文；而前端会把整轮的 content 分片拼成**同一个气泡**，于是过程话会粘在正文最前面
+    （实测：正文首句是一句英文计划）。所以正文按 step 分组：
 
-    为什么不是"最后**一个 step** 的正文"：本流程是 **③生成正文 → ④更新存档（工具调用）**，
-    正文**之后**还会再调工具——所以正文往往不是最后一步，而是"最后一个有正文的步"。
+    - **同一 step 内**：照常实时流式（逐字出现）；
+    - **一旦更靠后的 step 也开始写正文**：先发一条 ``content_reset`` 让前端清空气泡正文，
+      再从新那段接着流——也就是"过程话先出现，随后被真正的正文替换掉"；
+    - ``done.content`` 只带**最后那段**（落库/刷新后的历史也只有正文，不含过程话）。
 
-    代价：正文不再逐字流式（思考仍然实时流式），它在回合末**一次**出现。换来的好处是
-    过程话**根本不会露给玩家**（而不是先显示再擦掉）。
+    ⚠️ 为什么不能"只发最后一段、前面不发"：那要等到回合结束才知道哪段是最后的，
+    正文就只能整段等回合末出现（不再流式）。取舍：宁可极少数情况下闪一下过程话，也要保住流式。
+
+    ⚠️ 为什么不是"最后一个 **step** 的正文"：本流程是 ③生成正文 → ④更新存档（工具调用），
+    正文**之后**还会再调工具——所以正文往往是"最后一个**有正文的** step"。
     """
     import time
 
     deadline = time.monotonic() + overall_timeout_s
     seq = int(since_seq or 0)
     thinking_parts: list[str] = []
-    # 按 step 缓冲正文：只留最后那个产生过正文的 step。
-    #
+    # 按 step 分组正文：`text_parts` 始终只装"当前这段"（即最后出现的那段）
     # ⚠️ step **只出现在 `start` / `end` 帧上**，`chunk` 帧没有这个字段
-    # （chunk 只有 `attemptId` / `index` / `revision`）。所以这里从原始事件里跟踪
-    # 当前 step，而不是从 chunk 上读——踩过一次：从 chunk 读到的一直是 None，
-    # 结果正文被判成"没写过"，整轮正文全丢（前端只剩思考、chat.db 也空）。
+    # （chunk 只有 `attemptId` / `index` / `revision`）——所以从原始事件里跟踪，
+    # 不能从 chunk 上读（踩过：一直读到 None，正文整轮被丢）。
     current_step = None
-    text_by_step: dict = {}
-    last_text_step = None
-    has_text = False
+    text_group_step = None
+    text_parts: list[str] = []
     settled = False
     seen_any = False
-
-    def take_final_content() -> str:
-        """取最后那段正文；一个字都没写过就返回空串。"""
-        if not has_text:
-            return ""
-        return text_by_step.get(last_text_step, "")
 
     while time.monotonic() < deadline:
         got = state.wait_events(instance_id, since=seq, wait_ms=idle_timeout_ms)
@@ -178,28 +174,20 @@ def iter_frontend(state, instance_id: str, session_id: str,
                     thinking_parts.append(payload["delta"])
                     yield encode_sse(payload, seq=seq)
                 elif payload["type"] == EV_CONTENT:
-                    if not has_text or current_step == last_text_step:
-                        text_by_step[current_step] = \
-                            text_by_step.get(current_step, "") + payload["delta"]
-                    else:
-                        # 更靠后的 step 也开始写正文 → 之前那段是过程话，整段丢掉。
-                        text_by_step = {current_step: payload["delta"]}
-                    last_text_step = current_step
-                    has_text = True
-                    # 刻意**不在这里 yield**：正文一律留到回合末尾一次发（见文档字符串）。
+                    if text_parts and current_step != text_group_step:
+                        # 更靠后的 step 也开始写正文 → 之前那段是过程话：让前端清掉，重新流。
+                        yield encode_sse(
+                            {"type": EV_CONTENT_RESET, "step": text_group_step}, seq=seq
+                        )
+                        text_parts = []
+                    text_group_step = current_step
+                    text_parts.append(payload["delta"])
+                    yield encode_sse(payload, seq=seq)
 
             if is_turn_finished(ev, session_id):
-                final_content = take_final_content()
-                if final_content:
-                    # 末尾把正文作为一条 delta 发出去：前端按 delta 累计（`segmented`），
-                    # 也会正常渲染 markdown。
-                    yield encode_sse(
-                        {"type": EV_CONTENT, "delta": final_content, "step": last_text_step},
-                        seq=seq,
-                    )
                 done = {
                     "type": EV_DONE,
-                    "content": final_content,
+                    "content": "".join(text_parts),
                     "thinking": "".join(thinking_parts),
                     "segmented": True,
                 }
@@ -211,15 +199,9 @@ def iter_frontend(state, instance_id: str, session_id: str,
 
     if not settled:
         # 未能观察到 idle：仍然把已累积的内容交付，避免前端空等。
-        final_content = take_final_content()
-        if final_content:
-            yield encode_sse(
-                {"type": EV_CONTENT, "delta": final_content, "step": last_text_step},
-                seq=seq,
-            )
         done = {
             "type": EV_DONE,
-            "content": final_content,
+            "content": "".join(text_parts),
             "thinking": "".join(thinking_parts),
             "segmented": True,
         }
