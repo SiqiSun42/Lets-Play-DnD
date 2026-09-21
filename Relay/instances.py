@@ -52,6 +52,10 @@ CREDENTIAL_REF = "LPSD_USER_KEY"
 # 每用户 patch 里声明的 pi-ai 路由名。必须是小写连字符标识符。
 ROUTE_NAME = "letsplaydnd-user"
 
+# deepseek 用户改走**内置适配器**（见 `_write_user_patch`）：它的 provider id 是这个，
+# 端点由 bootstrap 级的 `DEEPSEEK_BASE_URL` 给（启动器在子进程环境里传）。
+DEEPSEEK_PROVIDER_ID = "deepseek-official"
+
 # 自动登记的中转 key 的 label 前缀。撤销时只碰这个前缀的行——
 # 管理端手工登记的 key（label 不带它）是操作者的东西，自动流程不许删。
 AUTO_LABEL_PREFIX = "auto:"
@@ -147,6 +151,9 @@ class InstanceConfig:
     skills_dir: Path | None = None
     endpoint: str | None = None
     host: str = "127.0.0.1"
+    # 思考强度（`agent-default-model` 的 settings 字段）。跑团回合用 low 足够；
+    # 将来改成从 `Account/<用户名>/settings.json` 读，就变成用户可调。
+    reasoning_effort: str = "low"
     start_timeout_s: float = 90.0
     extra_env: dict[str, str] = field(default_factory=dict)
 
@@ -167,6 +174,7 @@ class InstanceConfig:
             ),
             dsh_bin=os.environ.get("DSH_BIN", "dsh"),
             profile=os.environ.get("DSH_INSTANCE_PROFILE", "letsplaydnd"),
+            reasoning_effort=os.environ.get("DSH_REASONING_EFFORT", "low"),
             patches=patches,
             preset_dir=Path(os.environ["DSH_PRESET_DIR"]) if os.environ.get("DSH_PRESET_DIR") else repo_root / "dsh" / "agent-presets",
             skills_dir=Path(os.environ["DSH_SKILLS_DIR"]) if os.environ.get("DSH_SKILLS_DIR") else repo_root / "Skills",
@@ -303,34 +311,76 @@ class UserInstances:
         path.chmod(0o600)
         return path
 
-    def _write_user_patch(self, username: str, route: dict) -> Path:
-        """写每用户 patch：把一个 OpenAI 兼容路由指向该用户的端点与模型。
+    def _write_user_settings(self, username: str, route: dict) -> Path:
+        """写该用户 DSH_HOME 的 `settings.yaml`：默认模型 + **思考强度**。
 
-        为什么用 patch 而不是 settings.yaml：`llm-pi-ai.providers` 是**组合**配置，
-        而 provider 路由里不能出现明文密钥（`apiKeyEnv` 只写引用名），
-        密钥本身留在 `.credentials.yaml`。
+        为什么放 settings 而不是 patch：`reasoningEffort` 是 **settings 层**的字段
+        （`agent-default-model` 的 settings schema 里有它，composition 的 config 里没有）。
+        不设它时用的是模型自己的默认档——实测偏高，思考啰嗦而跑团回合用不上。
+
+        这里也正是将来"让用户自己调"的落点：那时把 `reasoning_effort` 改成从
+        `Account/<用户名>/settings.json` 读即可。
         """
-        providers = {
-            ROUTE_NAME: {
-                "displayName": f"LetsPlayDnD ({route['provider']})",
-                "apiKeyEnv": CREDENTIAL_REF,
-                "api": "openai-completions",
-                "baseURL": route["baseURL"],
-                "models": [{"id": route["model"]}],
-            }
+        path = self.home(username) / "settings.yaml"
+        data: dict = {}
+        if path.is_file():
+            try:
+                loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+            except (OSError, yaml.YAMLError):
+                data = {}
+        data["agent-default-model"] = {
+            "provider": DEEPSEEK_PROVIDER_ID if route["provider"] == "deepseek" else ROUTE_NAME,
+            "model": route["model"],
+            # 档位只在 deepseek 的内置适配器上声明：pi-ai 手写路由的模型条目没声明档位，
+            # 设了会被 DSH 拒绝（实测 UNSUPPORTED_REASONING_EFFORT）。
+            **({"reasoningEffort": self.config.reasoning_effort}
+               if route["provider"] == "deepseek" else {}),
         }
-        # safe_dump 从第 0 列开始，而这段要嵌在 `  config:` 之下，所以要整体缩进。
-        body = yaml.safe_dump({"providers": providers}, allow_unicode=True, sort_keys=False)
-        indented = "".join(f"    {line}" for line in body.splitlines(keepends=True))
+        path.write_text(
+            yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        )
+        path.chmod(0o600)
+        return path
+
+    def _write_user_patch(self, username: str, route: dict) -> Path:
+        """写每用户 patch（组合层）：把默认模型指到该用户的端点、模型与密钥引用。
+
+        **两条路**（由 provider 决定）：
+
+        - **deepseek** → 内置适配器 `llm-deepseek` +
+          `agent-default-model.provider = deepseek-official`。端点由 bootstrap 级的
+          `DEEPSEEK_BASE_URL` 给（见 `_spawn`），密钥用 `apiKeyEnv` 指到本用户的引用名。
+          走这条路的原因是**思考档位**：内置适配器支持 `reasoningEffort`，
+          而手写声明一条 pi-ai 路由时，模型条目没有声明档位 → DSH 拒绝任何档位
+          （实测报 `UNSUPPORTED_REASONING_EFFORT`）。
+        - **其它 provider** → 手写一条 pi-ai 的 OpenAI 兼容路由（不设思考档位）。
+
+        provider 路由里不能出现明文密钥（`apiKeyEnv` 只写引用名），密钥留在 `.credentials.yaml`。
+        """
+        if route["provider"] == "deepseek":
+            rows = [
+                {"id": "llm-deepseek", "config": {"apiKeyEnv": CREDENTIAL_REF}},
+                {"id": "agent-default-model",
+                 "config": {"provider": DEEPSEEK_PROVIDER_ID, "model": route["model"]}},
+            ]
+        else:
+            rows = [
+                {"id": "llm-pi-ai",
+                 "config": {"providers": {ROUTE_NAME: {
+                     "displayName": f"LetsPlayDnD ({route['provider']})",
+                     "apiKeyEnv": CREDENTIAL_REF,
+                     "api": "openai-completions",
+                     "baseURL": route["baseURL"],
+                     "models": [{"id": route["model"]}],
+                 }}}},
+                {"id": "agent-default-model",
+                 "config": {"provider": ROUTE_NAME, "model": route["model"]}},
+            ]
         text = (
             "# 由 Relay/instances.py 按该用户的 settings.json 生成，每次启动会覆盖。\n"
-            "- id: llm-pi-ai\n"
-            "  config:\n"
-            f"{indented}"
-            "- id: agent-default-model\n"
-            "  config:\n"
-            f"    provider: {ROUTE_NAME}\n"
-            f"    model: {route['model']}\n"
+            + yaml.safe_dump(rows, allow_unicode=True, sort_keys=False)
         )
         patch = self.home(username) / "user.patch.yml"
         patch.write_text(text, encoding="utf-8")
@@ -354,7 +404,7 @@ class UserInstances:
 
     # ── 起停 ────────────────────────────────────────────────────
 
-    def _spawn(self, username: str, relay_key: str) -> subprocess.Popen:
+    def _spawn(self, username: str, relay_key: str, route: dict) -> subprocess.Popen:
         cfg = self.config
         home = self.home(username)
         patch = home / "user.patch.yml"
@@ -376,6 +426,10 @@ class UserInstances:
             env["DSH_PRESET_DIR"] = str(cfg.preset_dir)
         if cfg.skills_dir:
             env["DSH_SKILLS_DIR"] = str(cfg.skills_dir)
+        if route["provider"] == "deepseek":
+            # 内置 deepseek 适配器的端点来自这个 **bootstrap 级**变量（`.env` 里放不了它，
+            # 只能由启动环境给）——这里显式传给它。
+            env["DEEPSEEK_BASE_URL"] = route["baseURL"]
         env.update(cfg.extra_env)
 
         log_path = home / "instance.log"
@@ -530,12 +584,13 @@ class UserInstances:
             home = self._provision(username)
             self._write_credentials(username, plaintext)
             self._write_user_patch(username, route)
+            self._write_user_settings(username, route)
             relay_key = self._register_relay_key(username)
 
             # 拉起前先收掉这个用户名下可能还活着的实例（含上一个 Flask 进程遗留的）：
             # 反正 key 要重新登记，留着旧的只会让"哪个实例算这个用户的"变得含糊。
             self._kill_current(username)
-            proc = self._spawn(username, relay_key)
+            proc = self._spawn(username, relay_key, route)
 
             deadline = time.monotonic() + self.config.start_timeout_s
             while time.monotonic() < deadline:
