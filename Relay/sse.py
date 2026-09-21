@@ -61,11 +61,10 @@ def frame_to_frontend(ev: dict) -> list[dict]:
             return []
         chunk = frame.get("chunk") or {}
         ctype = chunk.get("type")
-        # `step` 随载荷带出去：正文要按 step 分组（见 iter_frontend 的说明）。
         if ctype == "reasoning-delta" and chunk.get("text"):
-            return [{"type": EV_THINKING, "delta": chunk["text"], "step": frame.get("step")}]
+            return [{"type": EV_THINKING, "delta": chunk["text"]}]
         if ctype == "text-delta" and chunk.get("text"):
-            return [{"type": EV_CONTENT, "delta": chunk["text"], "step": frame.get("step")}]
+            return [{"type": EV_CONTENT, "delta": chunk["text"]}]
         # block-start / block-end / tool-call-delta / usage / finish
         # 暂不向前端暴露，留待需要工具卡片时再补。
         return []
@@ -131,14 +130,21 @@ def iter_frontend(state, instance_id: str, session_id: str,
     seq = int(since_seq or 0)
     thinking_parts: list[str] = []
     # 按 step 缓冲正文：只留最后那个产生过正文的 step。
+    #
+    # ⚠️ step **只出现在 `start` / `end` 帧上**，`chunk` 帧没有这个字段
+    # （chunk 只有 `attemptId` / `index` / `revision`）。所以这里从原始事件里跟踪
+    # 当前 step，而不是从 chunk 上读——踩过一次：从 chunk 读到的一直是 None，
+    # 结果正文被判成"没写过"，整轮正文全丢（前端只剩思考、chat.db 也空）。
+    current_step = None
     text_by_step: dict = {}
     last_text_step = None
+    has_text = False
     settled = False
     seen_any = False
 
     def take_final_content() -> str:
-        """取最后那段正文；没有就返回空串。"""
-        if last_text_step is None:
+        """取最后那段正文；一个字都没写过就返回空串。"""
+        if not has_text:
             return ""
         return text_by_step.get(last_text_step, "")
 
@@ -163,19 +169,23 @@ def iter_frontend(state, instance_id: str, session_id: str,
                 continue
             seen_any = True
 
+            raw_step = ((ev.get("data") or {}).get("frame") or {}).get("step")
+            if isinstance(raw_step, int):
+                current_step = raw_step
+
             for payload in frame_to_frontend(ev):
                 if payload["type"] == EV_THINKING:
                     thinking_parts.append(payload["delta"])
                     yield encode_sse(payload, seq=seq)
                 elif payload["type"] == EV_CONTENT:
-                    step = payload.get("step")
-                    if last_text_step is None or step == last_text_step:
-                        text_by_step[step] = text_by_step.get(step, "") + payload["delta"]
-                        last_text_step = step
+                    if not has_text or current_step == last_text_step:
+                        text_by_step[current_step] = \
+                            text_by_step.get(current_step, "") + payload["delta"]
                     else:
                         # 更靠后的 step 也开始写正文 → 之前那段是过程话，整段丢掉。
-                        text_by_step = {step: payload["delta"]}
-                        last_text_step = step
+                        text_by_step = {current_step: payload["delta"]}
+                    last_text_step = current_step
+                    has_text = True
                     # 刻意**不在这里 yield**：正文一律留到回合末尾一次发（见文档字符串）。
 
             if is_turn_finished(ev, session_id):
