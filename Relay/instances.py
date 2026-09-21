@@ -244,9 +244,15 @@ class UserInstances:
         farm = profiles / "node_modules"
         if not farm.exists():
             src = cfg.profiles_source / "node_modules"
-            if not src.is_dir():
-                raise RuntimeError(f"部署里没有模块兜底槽：{src}")
-            farm.symlink_to(src)
+            if src.is_dir():
+                farm.symlink_to(src)
+            else:
+                # **不是必须预先存在**：DSH 每次启动 profile 时会为它的 DSH_HOME 自愈这个槽
+                # （`healProfilesModuleFallback` 建的就是 `<DSH_HOME>/profiles/node_modules`）。
+                # 部署侧还没启动过任何 profile 时这里就是空的——不能因此拒绝起实例。
+                # （踩过：服务器上只跑过 `--dump-config`，槽还不存在，于是实例永远起不来。）
+                print(f"[instances] {cfg.profiles_source} 下暂无 node_modules，"
+                      f"留给实例启动时自愈：{farm}", flush=True)
 
         profile_dir = profiles / cfg.profile
         profile_dir.mkdir(exist_ok=True)
@@ -363,7 +369,18 @@ class UserInstances:
         log_path = home / "instance.log"
         log = open(log_path, "ab", buffering=0)
         proc = subprocess.Popen(
-            cmd, cwd=str(ROOT), env=env,
+            # ⚠️ cwd 必须是**用户自己的 home**，不能是仓库根。
+            #
+            # DSH 启动时会把「cwd 下的 `.env`」当**项目层**读进来（`loadLayeredEnv`），
+            # 于是两件事都会发生：
+            #   1. **它是拒绝 `DSH_*` 的**（`BOOTSTRAP_PREFIXES` 里就有 `"DSH_"`）——
+            #      而 Flask 的 `.env` 里正好放着 `DSH_BIN` / `DSH_PROFILE_SOURCE` /
+            #      `DSH_INSTANCE_PATCHES`，于是实例**每次启动都直接抛错**（服务器上踩到）。
+            #   2. 它会把 `.env` 里的 `FLASK_SECRET_KEY` / `RESEND_API_KEY` **物化进实例的
+            #      进程环境**，正好绕过 `_child_env()` 那份白名单。
+            # 改成 home 之后，DSH 读的是 `<home>/.env`（不存在）→ 两个问题一起消失。
+            # 仓库路径都通过绝对路径传入（`--patch`、profile 的 `link:` 依赖），不依赖 cwd。
+            cmd, cwd=str(home), env=env,
             stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True,   # 独立进程组，停止时能连子孙一起收
         )
