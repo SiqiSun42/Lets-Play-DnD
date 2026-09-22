@@ -485,15 +485,6 @@
   overflow: visible;
 }
 
-/* 等待提示的文字（"正在准备 DM…（已等 12s）"）。和三点动画同一行，放在它右边。 */
-.chat-thinking-status {
-  margin-left: 10px;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--chat-muted, #8a8a8a);
-  white-space: nowrap;
-}
-
 .chat-thinking-dot {
   flex: 0 0 10px;
   width: 10px;

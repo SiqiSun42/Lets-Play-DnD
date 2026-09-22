@@ -334,29 +334,6 @@ function showThinkingIndicator(label) {
   return row;
 }
 
-/**
- * 更新等待提示的文字（**复用**已有的等待行，不重建）。
- *
- * 为什么单独一个函数：`showThinkingIndicator(label)` 的 label 是渲染在**头像**位置的，
- * 拿它显示"已等 12s"会把文字塞进 DM 那个小方块里；而且它内部先 hide 再新建，
- * 每秒调一次就是每秒闪一次（实测踩到）。这里只改一个文本节点。
- *
- * @param {string} text - 要显示的文字；空字符串就清掉。
- * @returns {void}
- */
-function setThinkingIndicatorText(text) {
-  const row = document.querySelector('#view-body .chat-messages [data-thinking="true"]');
-  if (!row) return;
-  let el = row.querySelector('.chat-thinking-status');
-  if (!el) {
-    el = document.createElement('div');
-    el.className = 'chat-thinking-status';
-    el.setAttribute('role', 'status');
-    row.appendChild(el);
-  }
-  el.textContent = text || '';
-}
-
 function hideThinkingIndicator() {
   const box = document.querySelector('#view-body .chat-messages');
   if (!box) return;
@@ -643,11 +620,20 @@ async function sendChatMessage() {
     stallTimer = setTimeout(() => controller.abort(), STALL_MS);
   };
   let progressNote = '';
+  // 等待提示写在**思考区**里（而不是去动那个"三点 + 头像"的等待指示器）：
+  // 后者是 flex 行、label 会渲染到头像位置，而且每秒更新会闪。
+  // 写在思考区还有个好处：**真思考一开始就把它顶掉**，不需要额外的清理。
   const tickWait = () => {
+    if (thinkingAcc) return;            // 真思考已经来了，别再插话
     const secs = Math.round((Date.now() - waitStart) / 1000);
-    setThinkingIndicatorText(`${progressNote || '正在准备…'}（已等 ${secs}s）`);
+    openBubbleForWrite();
+    streamDm.ensureStreamUi();
+    streamDm.reasoningBlock.hidden = false;
+    streamDm.reasoningTextEl.textContent =
+      `${progressNote || '正在准备…'}（已等 ${secs}s）`;
   };
   bumpStall();
+  tickWait();
   waitTicker = setInterval(tickWait, 1000);
 
   const streamUrl = sessionType === 'consult'
