@@ -151,9 +151,12 @@ class InstanceConfig:
     skills_dir: Path | None = None
     endpoint: str | None = None
     host: str = "127.0.0.1"
-    # 思考强度（`agent-default-model` 的 settings 字段）。跑团回合用 low 足够；
+    # 思考强度（`agent-default-model` 的 settings 字段）。
+    #   "low" / "medium" / "high" → 写进 settings.yaml
+    #   ""（空）                  → **不写这个字段**，用模型自己的默认档
+    # 实测 low 太笨（多步工具 + 判类 + 写正文 + 记账一起做时明显退化），medium 是折中。
     # 将来改成从 `Account/<用户名>/settings.json` 读，就变成用户可调。
-    reasoning_effort: str = "low"
+    reasoning_effort: str = "medium"
     start_timeout_s: float = 90.0
     extra_env: dict[str, str] = field(default_factory=dict)
 
@@ -174,7 +177,7 @@ class InstanceConfig:
             ),
             dsh_bin=os.environ.get("DSH_BIN", "dsh"),
             profile=os.environ.get("DSH_INSTANCE_PROFILE", "letsplaydnd"),
-            reasoning_effort=os.environ.get("DSH_REASONING_EFFORT", "low"),
+            reasoning_effort=os.environ.get("DSH_REASONING_EFFORT", "medium"),
             patches=patches,
             preset_dir=Path(os.environ["DSH_PRESET_DIR"]) if os.environ.get("DSH_PRESET_DIR") else repo_root / "dsh" / "agent-presets",
             skills_dir=Path(os.environ["DSH_SKILLS_DIR"]) if os.environ.get("DSH_SKILLS_DIR") else repo_root / "Skills",
@@ -335,8 +338,9 @@ class UserInstances:
             "model": route["model"],
             # 档位只在 deepseek 的内置适配器上声明：pi-ai 手写路由的模型条目没声明档位，
             # 设了会被 DSH 拒绝（实测 UNSUPPORTED_REASONING_EFFORT）。
+            # 空字符串 = **不写这个字段**（用模型自己的默认档）。
             **({"reasoningEffort": self.config.reasoning_effort}
-               if route["provider"] == "deepseek" else {}),
+               if route["provider"] == "deepseek" and self.config.reasoning_effort else {}),
         }
         path.write_text(
             yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
