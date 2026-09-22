@@ -607,6 +607,26 @@ async function sendChatMessage() {
   let streamDm = dm;
   let bubbleClosed = false;
 
+  // 等后端的那段是"看不见的死区"：冷启动可能几十秒，而一旦后端卡住/报错，
+  // 玩家只会看到一个永远不动的等待动画——比一个明确的 504 更糟（会白等）。
+  // 所以：① 显示已等待秒数，② 超过 STALL_MS 没有任何新数据就主动判定卡住。
+  const STALL_MS = 180000;
+  const waitStart = Date.now();
+  const controller = new AbortController();
+  let stallTimer = null;
+  let waitTicker = null;
+  const bumpStall = () => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => controller.abort(), STALL_MS);
+  };
+  let progressNote = '';
+  const tickWait = () => {
+    const secs = Math.round((Date.now() - waitStart) / 1000);
+    showThinkingIndicator(progressNote ? `${progressNote}（已等 ${secs}s）` : `等待中…（已等 ${secs}s）`);
+  };
+  bumpStall();
+  waitTicker = setInterval(tickWait, 1000);
+
   const streamUrl = sessionType === 'consult'
     ? 'api/consult/message/stream'
     : 'api/game/message/stream';
@@ -656,6 +676,7 @@ async function sendChatMessage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(streamBody),
+      signal: controller.signal,
     });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
@@ -669,6 +690,7 @@ async function sendChatMessage() {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      bumpStall();          // 有数据 = 后端还活着，重置看门狗
       buffer += decoder.decode(value, { stream: true });
       const parts = buffer.split('\n\n');
       buffer = parts.pop() || '';
@@ -690,6 +712,10 @@ async function sendChatMessage() {
         } else if (ev.type === 'end_bubble' || ev.type === 'new_bubble') {
           sealCurrentBubble();
           scrollChatToBottomIfNeeded();
+        } else if (ev.type === 'progress') {
+          // 后端在"准备"阶段发来的状态提示（它不经过 thinking 通道，所以不会污染思考）
+          progressNote = ev.text || '';
+          tickWait();
         } else if (ev.type === 'content') {
           openBubbleForWrite();
           streamDm.ensureStreamUi();
@@ -732,14 +758,20 @@ async function sendChatMessage() {
     }
   } catch (err) {
     hideThinkingIndicator();
+    const aborted = !!(err && (err.name === 'AbortError' || /abort/i.test(String(err.message || ''))));
+    const msg = aborted
+      ? `后端超过 ${Math.round(STALL_MS / 1000)} 秒没有任何响应（可能卡住了）。刷新页面重试；若反复如此，去看服务器上的 app.log。`
+      : String(err.message || err);
     if (dm) {
       dm.ensureStreamUi();
       dm.setContentVisible(true);
-      dm.contentEl.textContent = String(err.message || err);
+      dm.contentEl.textContent = msg;
     } else {
-      appendChatMessage('dm', String(err.message || err));
+      appendChatMessage('dm', msg);
     }
   } finally {
+    clearTimeout(stallTimer);
+    clearInterval(waitTicker);
     hideThinkingIndicator();
     setChatSendBusy(false);
     input.focus();

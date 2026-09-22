@@ -585,11 +585,13 @@ class UserInstances:
                     f"或 .env 里缺少对应的 *_URL / *_MODEL"
                 )
 
+            t_start = time.monotonic()
             home = self._provision(username)
             self._write_credentials(username, plaintext)
             self._write_user_patch(username, route)
             self._write_user_settings(username, route)
             relay_key = self._register_relay_key(username)
+            t_prepared = time.monotonic()
 
             # 拉起前先收掉这个用户名下可能还活着的实例（含上一个 Flask 进程遗留的）：
             # 反正 key 要重新登记，留着旧的只会让"哪个实例算这个用户的"变得含糊。
@@ -599,6 +601,12 @@ class UserInstances:
             deadline = time.monotonic() + self.config.start_timeout_s
             while time.monotonic() < deadline:
                 if self.state.instance_for_user(username):
+                    # 冷启动耗时是这台机器的主要成本，所以要能一眼看到它花在哪：
+                    # 铺目录 vs Node 启动到连上中转。
+                    now = time.monotonic()
+                    print(f"[instances] {username} 冷启动 {now - t_start:.1f}s"
+                          f"（铺配置 {t_prepared - t_start:.1f}s / 启动到上线 "
+                          f"{now - t_prepared:.1f}s）", flush=True)
                     return self.state.instance_for_user(username)
                 if proc.poll() is not None:
                     err = (f"实例进程已退出（code={proc.returncode}）：\n"

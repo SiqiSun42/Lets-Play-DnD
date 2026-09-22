@@ -975,7 +975,7 @@ def _dsh_consult_stream(username: str, text: str):
         # 中间的反向代理会先超时 → 前端看到 504（实测踩到）。
         # 这条走 thinking 通道（前端渲染在思考区），**不经过 iter_frontend 的累计**，
         # 所以不会进 done.thinking、也不会落进 chat.db。
-        yield encode_sse({"type": "thinking", "delta": "（正在准备顾问，首次约半分钟…）\n"})
+        yield encode_sse({"type": "progress", "text": "正在准备顾问，首次会慢一些…"})
 
         try:
             # 该用户没有实例在线就按需起一个（用自己的 key）。起失败不抛，
@@ -1072,7 +1072,7 @@ def _dsh_game_stream(username: str, save_id: str, text: str, skill: str):
         # 中间的反向代理会先超时 → 前端看到 504（实测踩到）。
         # 这条走 thinking 通道（前端渲染在思考区），**不经过 iter_frontend 的累计**，
         # 所以不会进 done.thinking、也不会落进 chat.db。
-        yield encode_sse({"type": "thinking", "delta": "（正在准备 DM，首次约半分钟…）\n"})
+        yield encode_sse({"type": "progress", "text": "正在准备 DM，首次会慢一些…"})
 
         try:
             # 该用户没有实例在线就按需起一个（用自己的 key）。起失败不抛。
@@ -1456,4 +1456,15 @@ def ui_files(filename):
 
 if __name__ == "__main__":
     init_db()
-    app.run(host='0.0.0.0', port=5000)
+    # ⚠️ **必须开线程**（werkzeug 的默认是 threaded=False，即单线程）。
+    #
+    # 这套架构天然要求并发：每个 DSH 实例都在长轮询 `/dsh-api/inbox`（一次占住线程
+    # 25 秒）、上报 `/dsh-api/events`，浏览器那边还有 SSE 长连接（一个回合占住到结束）。
+    # 单线程时它们互相排队，症状是：消息请求**根本没被处理**、反向代理先超时（504）、
+    # 或者等好几分钟才有反应。实测踩到（Flask 只有 2 个线程、主线程空闲在 do_poll，
+    # 而 app.log 里连一条 `POST /api/game/message/stream` 都没有）。
+    #
+    # 生产上应换真正的 WSGI 服务器，但**必须单进程多线程**（gunicorn `--workers 1
+    # --threads N` / waitress）：中转的实例表、事件环、订阅都在进程内存里，
+    # 多 worker 会把同一实例的请求分到不同进程而互相看不见。
+    app.run(host='0.0.0.0', port=5000, threaded=True)

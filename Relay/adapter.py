@@ -222,7 +222,11 @@ def stream_dsh_turn(state, session_map: DshSessionMap, *,
     存档快照提交挂在这里。它抛异常**不影响这一轮**——正文已经产出并落库，
     收尾失败只记日志（见下）。
     """
+    import time as _time
+
+    t_turn = _time.monotonic()
     instance_id = wait_for_instance(state, username, timeout_s=instance_wait_s)
+    t_online = _time.monotonic()
     if not instance_id:
         yield encode_sse({
             "type": EV_ERROR,
@@ -236,6 +240,11 @@ def stream_dsh_turn(state, session_map: DshSessionMap, *,
     except Exception as exc:  # noqa: BLE001 — 对前端只暴露为一条 error 事件
         yield encode_sse({"type": EV_ERROR, "error": f"session setup failed: {exc}"})
         return
+    t_session = _time.monotonic()
+    # 一轮里"还没开始产出"的那段有多长：等实例 + 建会话。这两段都是用户干等着的。
+    print(f"[adapter] {username}/{save_id} 就绪 {t_session - t_turn:.1f}s"
+          f"（等实例 {t_online - t_turn:.1f}s / 建会话 {t_session - t_online:.1f}s）",
+          flush=True)
 
     try:
         state.subscribe(instance_id, topics=["sessions"], sessions=[session_id],
