@@ -85,6 +85,23 @@ _REV_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z_./~^-]*$")
 HISTORY_TOKEN_BUDGET = int(os.environ.get("DSH_HISTORY_BUDGET", "20000"))
 
 
+def _preparing_event(username: str, who: str) -> dict:
+    """"正在准备"那条 SSE，必须在任何慢活之前送出去（否则反向代理先超时 → 504）。
+
+    它同时告诉前端**现在是哪种等待**，前端据此决定要不要报秒：
+
+    - ``phase="starting"``：实例还没上线，接下来是几十秒的冷启动 → 报秒（这正是报秒的用途）；
+    - ``phase="ready"``：实例已在线，这一轮马上开始 → 不报秒。等待由前端本来就有的
+      "三点 + 头像"指示器表达就够了；每轮都报秒会让玩家以为系统一直在建实例。
+    """
+    if relay_state.instance_for_user(username) is not None:
+        return {"type": "progress", "phase": "ready"}
+    # 中文之间不加空格（"正在启动顾问"），但英文缩写要（"正在启动 DM"）。
+    gap = " " if who.isascii() else ""
+    return {"type": "progress", "phase": "starting",
+            "text": f"正在启动{gap}{who}，首次会慢一些…"}
+
+
 def _snapshot_lock(username: str, save_id: str) -> threading.Lock:
     with _snapshot_locks_guard:
         return _snapshot_locks.setdefault((username, save_id), threading.Lock())
@@ -1009,7 +1026,7 @@ def _dsh_consult_stream(username: str, text: str):
         # 中间的反向代理会先超时 → 前端看到 504（实测踩到）。
         # 这条走 thinking 通道（前端渲染在思考区），**不经过 iter_frontend 的累计**，
         # 所以不会进 done.thinking、也不会落进 chat.db。
-        yield encode_sse({"type": "progress", "text": "正在准备顾问，首次会慢一些…"})
+        yield encode_sse(_preparing_event(username, "顾问"))
 
         try:
             # 该用户没有实例在线就按需起一个（用自己的 key）。起失败不抛，
@@ -1106,7 +1123,7 @@ def _dsh_game_stream(username: str, save_id: str, text: str, skill: str):
         # 中间的反向代理会先超时 → 前端看到 504（实测踩到）。
         # 这条走 thinking 通道（前端渲染在思考区），**不经过 iter_frontend 的累计**，
         # 所以不会进 done.thinking、也不会落进 chat.db。
-        yield encode_sse({"type": "progress", "text": "正在准备 DM，首次会慢一些…"})
+        yield encode_sse(_preparing_event(username, "DM"))
 
         try:
             # 该用户没有实例在线就按需起一个（用自己的 key）。起失败不抛。

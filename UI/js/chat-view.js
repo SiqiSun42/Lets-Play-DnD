@@ -609,9 +609,10 @@ async function sendChatMessage() {
 
   // 等后端的那段是"看不见的死区"：冷启动可能几十秒，而一旦后端卡住/报错，
   // 玩家只会看到一个永远不动的等待动画——比一个明确的 504 更糟（会白等）。
-  // 所以：① 显示已等待秒数，② 超过 STALL_MS 没有任何新数据就主动判定卡住。
+  // 所以：① 冷启动时报已等待秒数，② 超过 STALL_MS 没有任何新数据就主动判定卡住。
   const STALL_MS = 180000;
-  const waitStart = Date.now();
+  // 报秒的起点由后端决定：只有后端说 phase=starting（实例还没上线）才开始计时。
+  let waitStart = Date.now();
   const controller = new AbortController();
   let stallTimer = null;
   let waitTicker = null;
@@ -623,18 +624,44 @@ async function sendChatMessage() {
   // 等待提示写在**思考区**里（而不是去动那个"三点 + 头像"的等待指示器）：
   // 后者是 flex 行、label 会渲染到头像位置，而且每秒更新会闪。
   // 写在思考区还有个好处：**真思考一开始就把它顶掉**，不需要额外的清理。
+  // 这个报秒是**实例冷启动专用**的：实例已在线的那一轮不该出现（否则玩家会以为
+  // 系统每轮都在建实例），所以它只由后端的 phase=starting 触发。
+  const stopWaitNote = () => {
+    // 看到真产出（思考**或正文**）就停止报秒，并把自己写进去的那行清掉。
+    // 为什么必须看正文：模型第一步常常只吐正文不吐思考（实测推理 token = 0），
+    // 只判思考的话，思考区会一直挂着"已等 Ns"读到这一轮结束。
+    if (waitTicker) {
+      clearInterval(waitTicker);
+      waitTicker = null;
+    }
+    if (!thinkingAcc && streamDm?.reasoningTextEl) {
+      streamDm.reasoningTextEl.textContent = '';
+      streamDm.reasoningBlock.hidden = true;
+    }
+  };
   const tickWait = () => {
-    if (thinkingAcc) return;            // 真思考已经来了，别再插话
+    if (thinkingAcc || contentAcc) {   // 已经有真产出了，别再插话
+      stopWaitNote();
+      return;
+    }
     const secs = Math.round((Date.now() - waitStart) / 1000);
+    // 先等满 1 秒再显示：实例热着的时候通常几百毫秒就出字，
+    // 不该闪一下"已等 0s"（那是纯粹的噪点）。
+    if (secs < 1) return;
     openBubbleForWrite();
     streamDm.ensureStreamUi();
     streamDm.reasoningBlock.hidden = false;
     streamDm.reasoningTextEl.textContent =
-      `${progressNote || '正在准备…'}（已等 ${secs}s）`;
+      `${progressNote || '正在启动…'}（已等 ${secs}s）`;
+  };
+  // 报秒由后端的 phase=starting 拉起（见下面 progress 分支），这里不无条件启动：
+  // 实例已在线时不该出现任何报秒，等待由"三点 + 头像"指示器表达就够了。
+  const startWaitNote = () => {
+    if (waitTicker) return;             // 已经在报了
+    tickWait();
+    waitTicker = setInterval(tickWait, 1000);
   };
   bumpStall();
-  tickWait();
-  waitTicker = setInterval(tickWait, 1000);
 
   const streamUrl = sessionType === 'consult'
     ? 'api/consult/message/stream'
@@ -712,6 +739,7 @@ async function sendChatMessage() {
         const ev = JSON.parse(payload);
 
         if (ev.type === 'thinking') {
+          stopWaitNote();
           openBubbleForWrite();
           streamDm.ensureStreamUi();
           thinkingAcc += ev.delta || '';
@@ -722,10 +750,16 @@ async function sendChatMessage() {
           sealCurrentBubble();
           scrollChatToBottomIfNeeded();
         } else if (ev.type === 'progress') {
-          // 后端在"准备"阶段发来的状态提示（它不经过 thinking 通道，所以不会污染思考）
-          progressNote = ev.text || '';
-          tickWait();
+          // 后端在"准备"阶段发来的状态提示（它不经过 thinking 通道，所以不会污染思考）。
+          // 只有 phase=starting 才报秒：那表示**实例还没上线**，接下来是几十秒的冷启动。
+          // phase=ready（实例已在线）时什么都不做——这一轮马上就开始，报秒是误导。
+          if (ev.phase === 'starting') {
+            progressNote = ev.text || '';
+            waitStart = Date.now();
+            startWaitNote();
+          }
         } else if (ev.type === 'content') {
+          stopWaitNote();
           openBubbleForWrite();
           streamDm.ensureStreamUi();
           contentAcc += ev.delta || '';
