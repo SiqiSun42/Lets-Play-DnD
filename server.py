@@ -22,7 +22,7 @@ from Relay.adapter import DshSessionMap, stream_dsh_turn
 from Relay.blueprint import create_blueprint as create_relay_blueprint
 from Relay.instances import InstanceConfig, UserInstances, provider_route
 from Relay.snapshot import SaveSnapshots
-from Relay.sse import iter_frontend as relay_iter_frontend
+from Relay.sse import encode_sse, iter_frontend as relay_iter_frontend
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
@@ -970,6 +970,13 @@ def _dsh_consult_stream(username: str, text: str):
     cwd.mkdir(parents=True, exist_ok=True)
 
     def generate():
+        # ⚠️ **先把第一个事件送出去**，再去干慢活。
+        # 起实例 + 建会话要几十秒，而在这之前 Flask **连响应头都还没发**，
+        # 中间的反向代理会先超时 → 前端看到 504（实测踩到）。
+        # 这条走 thinking 通道（前端渲染在思考区），**不经过 iter_frontend 的累计**，
+        # 所以不会进 done.thinking、也不会落进 chat.db。
+        yield encode_sse({"type": "thinking", "delta": "（正在准备顾问，首次约半分钟…）\n"})
+
         try:
             # 该用户没有实例在线就按需起一个（用自己的 key）。起失败不抛，
             # 继续走下面的等待，用户看到的仍是那条"实例尚未连接"。
@@ -1060,6 +1067,13 @@ def _dsh_game_stream(username: str, save_id: str, text: str, skill: str):
                 {"type": "error", "error": f"存档工作区不存在：{cwd.name}"},
                 ensure_ascii=False) + "\n\n")
             return
+        # ⚠️ **先把第一个事件送出去**，再去干慢活。
+        # 起实例 + 建会话要几十秒，而在这之前 Flask **连响应头都还没发**，
+        # 中间的反向代理会先超时 → 前端看到 504（实测踩到）。
+        # 这条走 thinking 通道（前端渲染在思考区），**不经过 iter_frontend 的累计**，
+        # 所以不会进 done.thinking、也不会落进 chat.db。
+        yield encode_sse({"type": "thinking", "delta": "（正在准备 DM，首次约半分钟…）\n"})
+
         try:
             # 该用户没有实例在线就按需起一个（用自己的 key）。起失败不抛。
             ensure_user_instance(username)
