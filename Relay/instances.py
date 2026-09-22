@@ -56,6 +56,12 @@ ROUTE_NAME = "letsplaydnd-user"
 # 端点由 bootstrap 级的 `DEEPSEEK_BASE_URL` 给（启动器在子进程环境里传）。
 DEEPSEEK_PROVIDER_ID = "deepseek-official"
 
+# 内置 deepseek 适配器**唯一**接受的思考档位（见 dsh-llm-deepseek 的 reasoningEffort()：
+# 它只认这四个，别的值一律抛 `UNSUPPORTED_REASONING_EFFORT`，**包括 "medium"**）。
+# 适配器自己的文案：low=「routine / latency-sensitive」，high=「default balance for most tasks」。
+# 写成常量是为了让非法档位在**写配置前**就被拦下，而不是等实例启动后每一轮都失败。
+DEEPSEEK_REASONING_EFFORTS = ("off", "low", "high", "max")
+
 # 自动登记的中转 key 的 label 前缀。撤销时只碰这个前缀的行——
 # 管理端手工登记的 key（label 不带它）是操作者的东西，自动流程不许删。
 AUTO_LABEL_PREFIX = "auto:"
@@ -152,11 +158,12 @@ class InstanceConfig:
     endpoint: str | None = None
     host: str = "127.0.0.1"
     # 思考强度（`agent-default-model` 的 settings 字段）。
-    #   "low" / "medium" / "high" → 写进 settings.yaml
-    #   ""（空）                  → **不写这个字段**，用模型自己的默认档
-    # 实测 low 太笨（多步工具 + 判类 + 写正文 + 记账一起做时明显退化），medium 是折中。
+    #   "off" / "low" / "high" / "max" → 写进 settings.yaml（deepseek 内置适配器只认这四个）
+    #   ""（空）                       → **不写这个字段**，用模型自己的默认档
+    # 实测 low 太笨（多步工具 + 判类 + 写正文 + 记账一起做时明显退化），
+    # 而 "medium" 是不存在的档位（会导致每一轮直接报错、没有任何输出），所以用 high。
     # 将来改成从 `Account/<用户名>/settings.json` 读，就变成用户可调。
-    reasoning_effort: str = "medium"
+    reasoning_effort: str = "high"
     start_timeout_s: float = 90.0
     extra_env: dict[str, str] = field(default_factory=dict)
 
@@ -177,7 +184,7 @@ class InstanceConfig:
             ),
             dsh_bin=os.environ.get("DSH_BIN", "dsh"),
             profile=os.environ.get("DSH_INSTANCE_PROFILE", "letsplaydnd"),
-            reasoning_effort=os.environ.get("DSH_REASONING_EFFORT", "medium"),
+            reasoning_effort=os.environ.get("DSH_REASONING_EFFORT", "high"),
             patches=patches,
             preset_dir=Path(os.environ["DSH_PRESET_DIR"]) if os.environ.get("DSH_PRESET_DIR") else repo_root / "dsh" / "agent-presets",
             skills_dir=Path(os.environ["DSH_SKILLS_DIR"]) if os.environ.get("DSH_SKILLS_DIR") else repo_root / "Skills",
@@ -325,6 +332,14 @@ class UserInstances:
         `Account/<用户名>/settings.json` 读即可。
         """
         path = self.home(username) / "settings.yaml"
+        # 护栏：档位必须在许可清单里，否则写下去等于**每种回合都直接失败**——
+        # DSH 在 `step/start` 后立刻 `turn/end` 报 UNSUPPORTED_REASONING_EFFORT，
+        # 一个事件都不产生（正文、思考全没有），前端只看到一条空消息。
+        effort = self.config.reasoning_effort.strip()
+        if effort and effort not in DEEPSEEK_REASONING_EFFORTS:
+            print(f"[instances] 思考档位 {effort!r} 不在 "
+                  f"{DEEPSEEK_REASONING_EFFORTS} 里，改用 high", flush=True)
+            effort = "high"
         data: dict = {}
         if path.is_file():
             try:
@@ -339,8 +354,8 @@ class UserInstances:
             # 档位只在 deepseek 的内置适配器上声明：pi-ai 手写路由的模型条目没声明档位，
             # 设了会被 DSH 拒绝（实测 UNSUPPORTED_REASONING_EFFORT）。
             # 空字符串 = **不写这个字段**（用模型自己的默认档）。
-            **({"reasoningEffort": self.config.reasoning_effort}
-               if route["provider"] == "deepseek" and self.config.reasoning_effort else {}),
+            **({"reasoningEffort": effort}
+               if route["provider"] == "deepseek" and effort else {}),
         }
         path.write_text(
             yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
