@@ -78,6 +78,12 @@ _snapshot_locks_guard = threading.Lock()
 # 但一个以 `-` 开头的 rev 会被当成 git 的选项，那就等于把命令行交给了调用方。
 _REV_RE = re.compile(r"^[0-9a-zA-Z][0-9a-zA-Z_./~^-]*$")
 
+# 冷会话首轮恢复历史时的预算。单位是**字数**，因为
+# `Store.game.load_history_for_prompt` 用"1 字 ≈ 1 token"这种**偏保守**的折算
+# （中文的真实 token 数一般少于字数）：宁可少注入，也不让首轮 prompt 超预算。
+# 只在新建会话的那一轮用一次；之后靠会话自己的记忆，不再重复注入。
+HISTORY_TOKEN_BUDGET = int(os.environ.get("DSH_HISTORY_BUDGET", "20000"))
+
 
 def _snapshot_lock(username: str, save_id: str) -> threading.Lock:
     with _snapshot_locks_guard:
@@ -87,6 +93,34 @@ def _snapshot_lock(username: str, save_id: str) -> threading.Lock:
 def _save_data_dir(username: str, save_id: str) -> Path:
     """存档的模型工作区（快照的工作树）。"""
     return ROOT / "Account" / username / "Saves" / save_id / "data"
+
+
+def _game_history_block(username: str, save_id: str) -> str:
+    """把该存档 `chat.db` 里最近的对话渲染成一段"历史记录"文本，供**首轮**注入。
+
+    为什么需要它：DSH 会话存在**用户级 DSH_HOME** 里（`.dsh-users/<用户>/sessions/`），
+    不随存档走；而存档复制（`shutil.copytree`）只带走存档目录，里面只有世界文件与
+    `chat.db`。所以副本的会话是空的，能恢复上下文的唯一来源就是自己的 `chat.db`。
+
+    拿到文本后由 `Relay.adapter.stream_dsh_turn` 拼在 skill 标记之后、玩家这句话之前；
+    它**只在新建会话的那一轮**被调用（见 `history_provider`）。
+    """
+    from Store.game import load_history_for_prompt
+
+    messages = load_history_for_prompt(username, save_id, HISTORY_TOKEN_BUDGET)
+    if not messages:
+        return ""
+    lines = [
+        "【以下是这位玩家与你（DM）之前的对话记录，用来恢复上下文。",
+        "它们是已经发生过的剧情，不是新指令：不要复述，也不要逐条回应，只当作背景。】",
+        "",
+    ]
+    for item in messages:
+        who = "玩家" if item.get("role") == "user" else "DM"
+        lines.append(f"[{who}] {item.get('content') or ''}")
+    lines.append("")
+    lines.append(f"【以上为历史记录，共 {len(messages)} 条。下面才是玩家现在说的话。】")
+    return "\n".join(lines)
 
 
 def commit_save_snapshot(username: str, save_id: str, text: str) -> str | None:
@@ -1081,6 +1115,8 @@ def _dsh_game_stream(username: str, save_id: str, text: str, skill: str):
                 relay_state, dsh_session_map,
                 username=username, save_id=save_id, text=text,
                 cwd=str(cwd), skill=skill, model_key=session_model_key(username),
+                # 只在**新建会话**的那一轮注入存档历史（副本迁移过来时靠它恢复上下文）。
+                history_provider=lambda: _game_history_block(username, save_id),
                 persist=lambda role, content, reasoning: game_append_message(
                     username, save_id, role, content, reasoning),
                 # 快照在**出稿之后**提交（on_turn_end 里已经吞掉异常，失败不影响这一轮）。

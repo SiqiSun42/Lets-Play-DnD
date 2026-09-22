@@ -76,6 +76,8 @@ class DshSessionMap:
             conn.execute("ALTER TABLE dsh_sessions ADD COLUMN cwd TEXT")
         if "model_key" not in columns:
             conn.execute("ALTER TABLE dsh_sessions ADD COLUMN model_key TEXT")
+        if "has_history" not in columns:
+            conn.execute("ALTER TABLE dsh_sessions ADD COLUMN has_history INTEGER")
 
     def _connect(self):
         return sqlite3.connect(self.db_path, timeout=10)
@@ -95,18 +97,63 @@ class DshSessionMap:
 
     def set(self, username: str, save_id: str, session_id: str,
             cwd: str | None = None, model_key: str | None = None) -> None:
+        """记下这个存档当前用的是哪个会话。**只在新会话建好时调用。**
+
+        `has_history` 一律清空：新会话还没有交付过任何一轮，调用方据此决定要不要
+        注入存档历史（见 `stream_dsh_turn` 的 `history_provider`）。
+        """
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         with self._lock:
             conn = self._connect()
             try:
                 conn.execute(
                     "INSERT INTO dsh_sessions"
-                    " (username, save_id, session_id, created_at, cwd, model_key)"
-                    " VALUES (?, ?, ?, ?, ?, ?)"
+                    " (username, save_id, session_id, created_at, cwd, model_key, has_history)"
+                    " VALUES (?, ?, ?, ?, ?, ?, NULL)"
                     " ON CONFLICT(username, save_id)"
                     " DO UPDATE SET session_id = excluded.session_id,"
-                    " cwd = excluded.cwd, model_key = excluded.model_key",
+                    " cwd = excluded.cwd, model_key = excluded.model_key,"
+                    " has_history = NULL",
                     (username, save_id, session_id, now, cwd, model_key),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def has_history(self, username: str, save_id: str) -> bool:
+        """这个会话是否**已经交付过**至少一轮内容（即模型手里确实有东西可记）。
+
+        为什么问自己而不问 DSH：dsh2server 的 `blank` 字段名看着像"没有 turn"，
+        实际是 `#liveSummary()` 里硬编码的 `blank: false`（凡活着的会话都为 false），
+        只有从磁盘捞出来的冷会话才是 true——用它判断会得出与实际相反的结果。
+        `session.history` 又要求先有 `throughSeq`，为一个布尔值接整套翻页不划算。
+        所以这里只信**我们自己的观察**：这一轮真的交付了内容，才算有历史。
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT has_history FROM dsh_sessions"
+                    " WHERE username = ? AND save_id = ?",
+                    (username, save_id),
+                ).fetchone()
+            finally:
+                conn.close()
+        return bool(row and row[0])
+
+    def mark_has_history(self, username: str, save_id: str, session_id: str) -> None:
+        """标记该会话已经交付过一轮内容。
+
+        带 `session_id` 条件是防"陈旧写入"：若这一轮跑着的时候会话被重建，
+        这次标记不该落到新会话头上（新会话还是空的）。
+        """
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE dsh_sessions SET has_history = 1"
+                    " WHERE username = ? AND save_id = ? AND session_id = ?",
+                    (username, save_id, session_id),
                 )
                 conn.commit()
             finally:
@@ -158,17 +205,26 @@ def _session_alive(state, instance_id: str, session_id: str) -> bool:
 
 def _ensure_session(state, session_map: DshSessionMap, username: str,
                     save_id: str, instance_id: str, cwd: str, preset: str,
-                    model_key: str | None = None) -> str:
+                    model_key: str | None = None) -> tuple[str, bool]:
     """取回或新建该存档对应的 DSH 会话，并在新建时选择 preset。
 
     复用前要满足三条：工作区没变、**模型配置没变**（``needs_rebuild``）、旧会话还活着。
     任一条不满足就重建——会话的 cwd 与模型选择都是创建事实，建完改不了。
+
+    返回 ``(session_id, inject_history)``：``inject_history`` 表示**模型手上没有可用的
+    历史**，调用方据此决定要不要把存档历史注入这一轮的 prompt（B 方案：只在缺历史时注入
+    一次，之后靠会话自己的记忆——见 ``stream_dsh_turn`` 的 ``history_provider``）。
+
+    判据是"新建了会话 **或** 这个会话还没交付过任何一轮"：只看"新建"会漏掉一类情况——
+    上一轮把会话建起来了、但那一轮失败了（一个事件都没产出），此时会话存在却是空的，
+    必须继续注入。只看"我们有没有历史记录"会漏掉副本迁移（副本的会话是空的，
+    而映射里的记录是新的）。两者取或，才是"模型真的没东西可记"。
     """
     session_id = session_map.get(username, save_id)
     if (session_id
             and not session_map.needs_rebuild(username, save_id, cwd, model_key)
             and _session_alive(state, instance_id, session_id)):
-        return session_id
+        return session_id, not session_map.has_history(username, save_id)
 
     resp = state.request(instance_id, "session.create", {"cwd": cwd})
     result = (resp or {}).get("result") or {}
@@ -179,8 +235,25 @@ def _ensure_session(state, session_map: DshSessionMap, username: str,
     # 显式选 preset：不依赖部署 default，也避免影响开发会话。
     state.request(instance_id, "agentPreset.select",
                   {"sessionId": session_id, "agentPreset": preset})
-    session_map.set(username, save_id, session_id, cwd)
-    return session_id
+    # `model_key` 必须一起存：`needs_rebuild()` 拿它和当前指纹比对，缺了它这一列就是
+    # NULL，而当前指纹永远非空 → 下一轮必定判定"配置变了" → **每轮都重建会话**，
+    # 模型于是永远拿不到上一轮的对话（实测：一个存档 4 分钟内诞生 5 个会话，每个只有 1 个 turn）。
+    session_map.set(username, save_id, session_id, cwd, model_key)
+    return session_id, True
+
+def compose_prompt(skill: str | None, text: str, history: str = "") -> str:
+    """拼出真正下发给 DSH 的那一条消息。
+
+    形态：``/技能名`` 在**行首**（DSH 的解析见 ``dsh-commands``：名字后允许换行），
+    然后是（可选的）历史块，最后才是玩家这一句。
+
+    为什么历史放前面、当前这句放最后：模型对最后一段的注意力最强，玩家**现在说
+    的话**必须是最后出现的；历史只是背景。
+
+    为什么技能标记必须留在最前：它才是"这一轮按跑团流程走"的开关（见模块顶部说明）。
+    """
+    body = f"{history}\n\n{text}" if history else text
+    return body if not skill else f"/{skill} {body}"
 
 
 def wait_for_instance(state, username: str, timeout_s: float = 45.0,
@@ -208,6 +281,7 @@ def stream_dsh_turn(state, session_map: DshSessionMap, *,
                     preset: str = DEFAULT_PRESET, persist=None,
                     on_turn_end=None,
                     model_key: str | None = None,
+                    history_provider=None,
                     instance_wait_s: float = 45.0):
     """产出可直接写进 SSE 响应体的字符串。
 
@@ -217,6 +291,15 @@ def stream_dsh_turn(state, session_map: DshSessionMap, *,
 
     ``persist`` 是可选回调 ``persist(role, content, reasoning)``，用于把这一轮
     的问答写回 chat.db；不传则不落库。
+
+    ``history_provider`` 是可选回调 ``history_provider() -> str``，返回一段"历史对话"
+    文本（空串表示没有）。它**只在这一轮新建了会话时**被调用一次，作为前缀拼进 prompt——
+    新建的会话没有任何上下文，而会话一旦建起来就会自己记住后续每一轮。
+
+    为什么需要它：DSH 会话存在**用户级 DSH_HOME** 里，不随存档走；而存档的复制功能
+    （``shutil.copytree``）只带走存档目录（世界文件 + ``chat.db``）。所以副本的会话是空的，
+    唯一能恢复上下文的地方就是存档自己的 ``chat.db``。首轮注入一次，副本就能
+    "从同一个地方继续玩"，同时又不必每轮重发历史。
 
     ``on_turn_end`` 是这一轮**出稿之后**的收尾回调（``on_turn_end(done)``），
     存档快照提交挂在这里。它抛异常**不影响这一轮**——正文已经产出并落库，
@@ -235,8 +318,9 @@ def stream_dsh_turn(state, session_map: DshSessionMap, *,
         return
 
     try:
-        session_id = _ensure_session(state, session_map, username, save_id,
-                                     instance_id, cwd, preset, model_key)
+        session_id, inject_history = _ensure_session(
+            state, session_map, username, save_id,
+            instance_id, cwd, preset, model_key)
     except Exception as exc:  # noqa: BLE001 — 对前端只暴露为一条 error 事件
         yield encode_sse({"type": EV_ERROR, "error": f"session setup failed: {exc}"})
         return
@@ -259,12 +343,21 @@ def stream_dsh_turn(state, session_map: DshSessionMap, *,
         yield encode_sse({"type": EV_ERROR, "error": "instance disappeared"})
         return
 
+    # 历史必须在**落库玩家这句话之前**取：`persist("user", …)` 一执行，
+    # 当前这句就已经进了 chat.db，之后再把整库读出来会把玩家刚说的话当成"历史"。
+    history = ""
+    if inject_history and history_provider is not None:
+        try:
+            history = history_provider() or ""
+        except Exception as exc:  # noqa: BLE001 — 注入失败不能挡住这一轮
+            print(f"[adapter] 历史注入失败（{username}/{save_id}）：{exc}", flush=True)
+
     if persist is not None:
         persist("user", text, None)
 
     # 注入 skill：`/名字` 是 DSH 侧"用户显式调用"的语法，只有**当轮**生效。
-    # 落库的是玩家原文（上面那行），token 不带进历史。
-    prompt = text if not skill else f"/{skill} {text}"
+    # 落库的是玩家原文（上面那行），技能标记与历史块都不带进 chat.db。
+    prompt = compose_prompt(skill, text, history)
 
     try:
         resp = state.request(instance_id, "session.prompt",
@@ -278,6 +371,15 @@ def stream_dsh_turn(state, session_map: DshSessionMap, *,
         return
 
     def on_done(done: dict) -> None:
+        # 只有**真的交付了正文**才算这个会话"有历史"：空轮（上游直接报错、超时兜底）
+        # 什么都不算，下一轮还得重新注入历史。`iter_frontend` 在正常 idle 与超时兜底
+        # 两条路上都会调这里，所以这个判断是必要的。
+        if (done.get("content") or "").strip():
+            try:
+                session_map.mark_has_history(username, save_id, session_id)
+            except Exception as exc:  # noqa: BLE001 — 记账失败不该影响这一轮
+                print(f"[adapter] 标记会话历史失败（{username}/{save_id}）：{exc}",
+                      flush=True)
         if persist is not None:
             persist("assistant", done.get("content") or "",
                     done.get("thinking") or None)

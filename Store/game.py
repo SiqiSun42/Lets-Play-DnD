@@ -81,3 +81,41 @@ def append_message(
     finally:
         conn.close()
 
+def load_history_for_prompt(username: str, save_id: str, max_chars: int) -> list:
+    """取最近的历史对话（只含 role/content），按字符预算从最近往回留。
+
+    为什么"从最近往回留"：越久远的内容对恢复上下文越不重要——真正长期的事实
+    （世界状态、人物、剧情主线）都在存档文件里，模型每轮会自己读。
+    一旦某条装不下就**停**（而不是跳过它继续往前取）：历史必须连续，
+    中间挖洞比少一段更糟。
+
+    为什么按**字符数**而不是真 token 数：这里刻意用"1 字 ≈ 1 token"这种偏保守的
+    估算（中文的真实 token 数一般少于字数），宁可少注入，也不让首轮 prompt 超预算。
+
+    为什么不带 reasoning：历史思考对恢复上下文没有作用，注进去只会烧钱。
+    """
+    path = game_db_path(username, save_id)
+    if not path.is_file():
+        return []
+    conn = connect(path)
+    try:
+        rows = conn.execute(
+            "SELECT role, content FROM messages ORDER BY id DESC"
+        ).fetchall()
+    except sqlite3.Error:
+        # 空库/半成品库不该让整轮对话失败：宁可没有历史，也要能继续玩。
+        return []
+    finally:
+        conn.close()
+
+    kept: list = []
+    used = 0
+    for role, content in rows:
+        text = content or ""
+        if used + len(text) > max_chars:
+            break
+        used += len(text)
+        kept.append({"role": role, "content": text})
+    kept.reverse()
+    return kept
+
