@@ -334,6 +334,29 @@ function showThinkingIndicator(label) {
   return row;
 }
 
+/**
+ * 更新等待提示的文字（**复用**已有的等待行，不重建）。
+ *
+ * 为什么单独一个函数：`showThinkingIndicator(label)` 的 label 是渲染在**头像**位置的，
+ * 拿它显示"已等 12s"会把文字塞进 DM 那个小方块里；而且它内部先 hide 再新建，
+ * 每秒调一次就是每秒闪一次（实测踩到）。这里只改一个文本节点。
+ *
+ * @param {string} text - 要显示的文字；空字符串就清掉。
+ * @returns {void}
+ */
+function setThinkingIndicatorText(text) {
+  const row = document.querySelector('#view-body .chat-messages [data-thinking="true"]');
+  if (!row) return;
+  let el = row.querySelector('.chat-thinking-status');
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'chat-thinking-status';
+    el.setAttribute('role', 'status');
+    row.appendChild(el);
+  }
+  el.textContent = text || '';
+}
+
 function hideThinkingIndicator() {
   const box = document.querySelector('#view-body .chat-messages');
   if (!box) return;
@@ -622,7 +645,7 @@ async function sendChatMessage() {
   let progressNote = '';
   const tickWait = () => {
     const secs = Math.round((Date.now() - waitStart) / 1000);
-    showThinkingIndicator(progressNote ? `${progressNote}（已等 ${secs}s）` : `等待中…（已等 ${secs}s）`);
+    setThinkingIndicatorText(`${progressNote || '正在准备…'}（已等 ${secs}s）`);
   };
   bumpStall();
   waitTicker = setInterval(tickWait, 1000);
